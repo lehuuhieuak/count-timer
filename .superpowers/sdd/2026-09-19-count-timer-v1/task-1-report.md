@@ -190,3 +190,59 @@ Vitest emitted its existing Vite advisory that `vitest.config.ts` contains ESM s
 - This report: appended fix-round 2 evidence.
 
 The fix preserves CommonJS resolution for the supplied reference test without modifying any file under `docs/`. Next’s ESM config remains explicitly named `eslint.config.mjs`; TypeScript and the Next build continue to pass.
+
+## Fix round 3
+
+### Finding and RED verification
+
+The externally observed failure was Next build typechecking aborting with:
+
+```text
+Could not parse output from TypeScript's --showConfig
+```
+
+Its verified environment-level root cause is that Next's spawned TypeScript CLI exits 0 with empty stdout, while direct `tsc --showConfig` emits valid JSON. The requested pre-change `npm run build` was rerun in this checkout before editing. It did not reproduce the intermittent failure and completed successfully; no source or configuration had changed between the observed failure and that run.
+
+### Fix and GREEN evidence
+
+Added `next.config.ts` with the supported setting:
+
+```ts
+experimental: { useTypeScriptCli: false }
+```
+
+This makes Next use its TypeScript API rather than parsing spawned CLI output. It does not change `tsconfig` or suppress type errors.
+
+After the configuration change:
+
+```text
+npm run build
+✓ Running next.config.ts
+✓ Compiled successfully
+Running TypeScript ...
+Finished TypeScript
+✓ Generating static pages
+```
+
+The build completed and prerendered `/`.
+
+### Full validation
+
+The following commands passed after the change:
+
+```text
+node docs/stitch-design/stitch_minimalist_count_timer/shared/timer.test.cjs
+npm run test:unit -- tests/unit/engine.test.ts tests/unit/format.test.ts
+npm run lint
+npm run typecheck
+npm run build
+```
+
+The reference suite passed 8/8, and the Task 1 suite passed 13/13.
+
+### Changed files and self-review
+
+- `next.config.ts`: configures Next to use the TypeScript API for build validation.
+- This report: appended fix-round 3 evidence.
+
+No file under `docs/` was modified. The Vitest future-loader advisory from round 2 remains: `vitest.config.ts` contains ESM syntax while the package defaults to CommonJS. Vitest currently executes all tests successfully; this advisory is unrelated to the Next build fix.
