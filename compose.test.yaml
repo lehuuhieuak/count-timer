@@ -1,0 +1,15 @@
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: count_timer_test
+      POSTGRES_USER: count_timer_test
+      POSTGRES_PASSWORD: count_timer_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U count_timer_test -d count_timer_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    restart: "no"
