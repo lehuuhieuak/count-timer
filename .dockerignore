@@ -1,0 +1,13 @@
+.git
+.gitignore
+.next
+node_modules
+coverage
+playwright-report
+test-results
+tests
+docs
+.superpowers
+.env*
+*.md
+*.tsbuildinfo
