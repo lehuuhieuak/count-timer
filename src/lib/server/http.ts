@@ -56,13 +56,36 @@ export async function readJsonBody(request: NextRequest): Promise<unknown> {
     }
   }
 
-  const raw = await request.text();
-  if (Buffer.byteLength(raw, 'utf8') > MAX_REQUEST_BODY_BYTES) {
-    throw new BadRequestError('Request body is too large.');
+  const reader = request.body?.getReader();
+  if (!reader) {
+    throw new BadRequestError('Request body must be valid JSON.');
+  }
+
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let byteLength = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        chunks.push(decoder.decode());
+        break;
+      }
+
+      byteLength += value.byteLength;
+      if (byteLength > MAX_REQUEST_BODY_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new BadRequestError('Request body is too large.');
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    reader.releaseLock();
   }
 
   try {
-    return JSON.parse(raw) as unknown;
+    return JSON.parse(chunks.join('')) as unknown;
   } catch {
     throw new BadRequestError('Request body must be valid JSON.');
   }
