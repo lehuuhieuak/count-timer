@@ -17,6 +17,7 @@ The Compose file requires these variables and passes them to the app without sto
 | `DATABASE_URL` | PostgreSQL connection string used by the app and the explicit migration runner. |
 | `APP_ORIGIN` | The exact public origin, including scheme and port when applicable; mutation requests must match it. |
 | `APP_IMAGE` | Optional image tag for rollback or a separately built release; defaults to `count-timer:local`. |
+| `BACKUP_DATABASE_URL` | Host-reachable database URL used by `pg_dump`; set separately when `DATABASE_URL` uses a container-only hostname. |
 
 The values in `.env.example` are placeholders. A container's `localhost` is the container itself, so it cannot reach PostgreSQL on the Docker host through `127.0.0.1`. For a database on the host, use `host.docker.internal` (the Compose file supplies the Linux `host-gateway` mapping), and configure PostgreSQL to listen on the required interface and permit the app role. For a database in another container, attach the app and database to a shared Docker network and use the database service name as the hostname. For a remote database, use its DNS name and firewall-approved port.
 
@@ -35,7 +36,7 @@ Back up the database before applying a migration. Run `pg_dump` from a machine t
 set -a
 . ./.env
 set +a
-pg_dump --format=custom --file="count-timer-$(date +%Y%m%d-%H%M%S).dump" "$DATABASE_URL"
+pg_dump --format=custom --file="count-timer-$(date +%Y%m%d-%H%M%S).dump" "${BACKUP_DATABASE_URL:?Set BACKUP_DATABASE_URL to a host-reachable database URL}"
 ```
 
 Apply schema changes as an explicit operation. This command runs the existing PostgreSQL migration runner inside the image and is deliberately separate from application startup:
@@ -76,13 +77,15 @@ The proxy then uses `http://app:3000` (the Compose service name) as its upstream
 services:
   app:
     networks: [web-proxy]
-    ports: []
+    ports: !reset []
 
 networks:
   web-proxy:
     external: true
     name: web-proxy
 ```
+
+Save that as `compose.proxy.yaml` and use `docker compose -f compose.yaml -f compose.proxy.yaml config --quiet` before starting the stack. The `!reset []` Compose tag removes the host binding inherited from `compose.yaml`; an empty list alone does not.
 
 Choose one proxy arrangement for a deployment. Do not bind the app to `0.0.0.0` merely to make a host proxy work, and do not use a container's `localhost` as the hostname for a database or proxy in another container.
 

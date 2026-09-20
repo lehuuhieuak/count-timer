@@ -7,6 +7,7 @@ const dockerfile = readFileSync(`${process.cwd()}/Dockerfile`, 'utf8');
 const dockerignore = readFileSync(`${process.cwd()}/.dockerignore`, 'utf8');
 const compose = readFileSync(`${process.cwd()}/compose.yaml`, 'utf8');
 const envExample = readFileSync(`${process.cwd()}/.env.example`, 'utf8');
+const gitignore = readFileSync(`${process.cwd()}/.gitignore`, 'utf8');
 const readme = readFileSync(`${process.cwd()}/README.md`, 'utf8');
 
 describe('production deployment contract', () => {
@@ -41,6 +42,9 @@ describe('production deployment contract', () => {
     expect(dockerignore).toMatch(/^docs$/m);
     expect(dockerignore).toMatch(/^\.env\*$/m);
     expect(dockerignore).toMatch(/^\.superpowers$/m);
+    expect(gitignore).toMatch(/^\.env$/m);
+    expect(gitignore).toMatch(/^\.env\.\*$/m);
+    expect(gitignore).toMatch(/^!\.env\.example$/m);
   });
 
   it('documents safe database connectivity and explicit release operations', () => {
@@ -48,10 +52,13 @@ describe('production deployment contract', () => {
     expect(databaseUrl).toBeTruthy();
     expect(new URL(databaseUrl!).hostname).not.toBe('localhost');
     expect(envExample).toContain('APP_ORIGIN=https://timer.example.com');
+    expect(envExample).toContain('BACKUP_DATABASE_URL=');
     expect(readme).toContain('pg_dump');
     expect(readme).toContain('docker compose run --rm --no-deps app node scripts/migrate.mjs');
     expect(readme).toContain('host.docker.internal');
     expect(readme).toContain('docker network create web-proxy');
     expect(readme).toContain('APP_IMAGE=count-timer:<previous-release>');
+    expect(readme).toContain('ports: !reset []');
+    expect(readme).toContain('BACKUP_DATABASE_URL');
   });
 });
