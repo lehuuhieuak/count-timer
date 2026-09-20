@@ -66,3 +66,74 @@ npm run build
 - Không có sessionStorage, fake backend response, fake connection label, hay dữ liệu timer mẫu trong shell Task 1.
 - Không thay đổi bất kỳ file nào dưới `docs/`.
 - API/backend, UI controls, đồng bộ đa tab, âm thanh, và giao diện timer đầy đủ vẫn thuộc các task sau.
+
+## Fix round 1
+
+### Review findings verified
+
+- **Expired running countdown:** reproduced. A `start` command at 7000 on `{ valueMs: 5000, startedAtMs: 1000 }` returned the stale `{ startedAtMs: 1000 }` timer instead of beginning the supplied new run.
+- **Finite invariant:** reproduced. `readValue({ valueMs: Number.MAX_VALUE, startedAtMs: 0 }, 'up', Number.MAX_VALUE)` returned `Infinity`; pausing could therefore store `Infinity`.
+- **Clean-checkout typecheck:** the reported failure did **not** reproduce. After removing the generated `.next` directory, `npm run typecheck` (`tsc --noEmit` at that point) exited successfully. The script nevertheless now explicitly runs `next typegen` before `tsc`, so route declarations are deterministically generated and checked instead of relying on absent generated imports being tolerated.
+
+### TDD RED/GREEN
+
+New engine tests were added before changing the engine, then run with:
+
+```text
+npm run test:unit -- tests/unit/engine.test.ts
+```
+
+RED result:
+
+```text
+Test Files  1 failed (1)
+Tests  2 failed | 9 passed (11)
+```
+
+The failures were `Infinity` instead of `Number.MAX_VALUE`, and the expired countdown retaining `startedAtMs: 1000` rather than resetting to 7000. The test suite also proves an active, non-expired countdown keeps its timestamp and existing run ID.
+
+GREEN result after the minimal engine change:
+
+```text
+Test Files  1 passed (1)
+Tests  11 passed (11)
+```
+
+For the typecheck review, the pre-change clean-state command was:
+
+```text
+rm -rf .next
+npm run typecheck
+```
+
+It passed, so there was no typecheck RED failure to fix. After updating the script, its verification was:
+
+```text
+npm run typecheck
+Generating route types...
+✓ Types generated successfully
+```
+
+### Changed files
+
+- `src/features/timer/engine.ts`: saturates count-up arithmetic at `Number.MAX_VALUE`; a start command restarts a countdown whenever its calculated remaining value is zero, including when it expired while marked running.
+- `tests/unit/engine.test.ts`: adds regression coverage for overflow saturation, expired-running restart, and preserving a non-expired running countdown.
+- `package.json`: makes `typecheck` run `next typegen && tsc --noEmit`.
+
+### Full validation
+
+The following commands passed after the fixes:
+
+```text
+npm run test:unit -- tests/unit/engine.test.ts tests/unit/format.test.ts
+npm run typecheck
+npm run lint
+npm run build
+```
+
+### Self-review
+
+- Saturation preserves a finite, non-negative value and is applied before a pause snapshot can store the calculated count-up value.
+- Countdown restart uses `readValue`, so it handles both stopped-zero and elapsed-to-zero timers; a non-expired running timer remains an idempotent start.
+- The typecheck change strengthens generation without changing `tsconfig` or excluding any source errors.
+- No `docs/` files were modified.

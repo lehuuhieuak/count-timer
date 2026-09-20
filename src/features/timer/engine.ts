@@ -42,7 +42,9 @@ export function readValue(timer: Timer, kind: TimerKind, nowMs: number): number 
   assertFiniteNonNegative(nowMs, 'Current time');
 
   const delta = timer.startedAtMs === null ? 0 : Math.max(0, nowMs - timer.startedAtMs);
-  return kind === 'up' ? timer.valueMs + delta : Math.max(0, timer.valueMs - delta);
+  return kind === 'up'
+    ? Math.min(Number.MAX_VALUE, timer.valueMs + delta)
+    : Math.max(0, timer.valueMs - delta);
 }
 
 export function applyCommand(
@@ -87,14 +89,14 @@ export function applyCommand(
     return result;
   }
 
-  if (timer.startedAtMs !== null) {
-    return result;
-  }
-
-  if (command.timer === 'down' && timer.valueMs === 0) {
+  if (command.timer === 'down' && readValue(timer, command.timer, nowMs) === 0) {
     result.down = { valueMs: result.durationMs, startedAtMs: nowMs };
     result.downRunId = nextRunId;
     result.completedRunId = null;
+    return result;
+  }
+
+  if (timer.startedAtMs !== null) {
     return result;
   }
 

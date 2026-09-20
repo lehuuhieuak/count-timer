@@ -26,6 +26,21 @@ describe('readValue', () => {
   it('does not add time while paused', () => {
     expect(readValue({ valueMs: 2_000, startedAtMs: null }, 'up', 9_000)).toBe(2_000);
   });
+
+  it('saturates a finite count-up calculation that would overflow', () => {
+    const timer = { valueMs: Number.MAX_VALUE, startedAtMs: 0 };
+    const value = readValue(timer, 'up', Number.MAX_VALUE);
+    const paused = applyCommand(
+      { ...snapshot(), up: timer },
+      { type: 'pause', timer: 'up' },
+      Number.MAX_VALUE,
+      'run-2',
+    );
+
+    expect(value).toBe(Number.MAX_VALUE);
+    expect(paused.up).toEqual({ valueMs: Number.MAX_VALUE, startedAtMs: null });
+    expect(Number.isFinite(paused.up.valueMs)).toBe(true);
+  });
 });
 
 describe('applyCommand', () => {
@@ -60,6 +75,30 @@ describe('applyCommand', () => {
     expect(result.down).toEqual({ valueMs: 5_000, startedAtMs: 4_000 });
     expect(result.downRunId).toBe('run-2');
     expect(result.completedRunId).toBeNull();
+  });
+
+  it('restarts a running countdown that expired before the start command', () => {
+    const result = applyCommand(
+      { ...snapshot(), down: { valueMs: 5_000, startedAtMs: 1_000 }, downRunId: 'run-1' },
+      { type: 'start', timer: 'down' },
+      7_000,
+      'run-2',
+    );
+
+    expect(result.down).toEqual({ valueMs: 5_000, startedAtMs: 7_000 });
+    expect(result.downRunId).toBe('run-2');
+  });
+
+  it('leaves a still-running countdown on its existing run', () => {
+    const result = applyCommand(
+      { ...snapshot(), down: { valueMs: 5_000, startedAtMs: 1_000 }, downRunId: 'run-1' },
+      { type: 'start', timer: 'down' },
+      2_000,
+      'run-2',
+    );
+
+    expect(result.down).toEqual({ valueMs: 5_000, startedAtMs: 1_000 });
+    expect(result.downRunId).toBe('run-1');
   });
 
   it('rejects changing the duration while countdown is running', () => {
