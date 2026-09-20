@@ -137,3 +137,56 @@ npm run build
 - Countdown restart uses `readValue`, so it handles both stopped-zero and elapsed-to-zero timers; a non-expired running timer remains an idempotent start.
 - The typecheck change strengthens generation without changing `tsconfig` or excluding any source errors.
 - No `docs/` files were modified.
+
+## Fix round 2
+
+### Finding and hypothesis
+
+The reference test was rerun before editing and reproduced the reported failure:
+
+```text
+node docs/stitch-design/stitch_minimalist_count_timer/shared/timer.test.cjs
+tests 8
+pass 1
+fail 7
+TypeError: create is not a function
+TypeError: format is not a function
+```
+
+The root `package.json` had `"type": "module"`. That makes the preserved `docs/.../shared/timer.js` ESM by extension, while its `.cjs` reference test loads it with `require()`. The reference file is intentionally CommonJS and was not changed.
+
+### Minimal fix and GREEN evidence
+
+Removed only the root `"type": "module"` field. Explicit `.mjs` files remain ESM for future Node scripts, and the existing Next/Vitest TypeScript configuration remains usable.
+
+After the change:
+
+```text
+node docs/stitch-design/stitch_minimalist_count_timer/shared/timer.test.cjs
+tests 8
+pass 8
+fail 0
+```
+
+### Full validation
+
+The following commands passed:
+
+```text
+node docs/stitch-design/stitch_minimalist_count_timer/shared/timer.test.cjs
+npm run test:unit -- tests/unit/engine.test.ts tests/unit/format.test.ts
+npm run lint
+npm run typecheck
+npm run build
+```
+
+Task 1 unit tests: 13/13 passed. Typecheck generated Next route types and completed. The production build completed and prerendered `/`.
+
+Vitest emitted its existing Vite advisory that `vitest.config.ts` contains ESM syntax while the package defaults to CommonJS; the current test command completed successfully. It is a future-loader advisory, not a validation failure, and changing the config file was outside this minimal compatibility fix.
+
+### Changed files and self-review
+
+- `package.json`: removed the package-level module mode that altered the semantics of the read-only reference `.js` file.
+- This report: appended fix-round 2 evidence.
+
+The fix preserves CommonJS resolution for the supplied reference test without modifying any file under `docs/`. Next’s ESM config remains explicitly named `eslint.config.mjs`; TypeScript and the Next build continue to pass.
