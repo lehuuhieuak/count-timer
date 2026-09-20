@@ -1,0 +1,65 @@
+:root {
+  color-scheme: light;
+  --bg: #f9f9ff;
+  --surface: #fff;
+  --soft: #f1f3ff;
+  --ink: #141b2b;
+  --muted: #626779;
+  --blue: #1d4ed8;
+  --line: #e9edff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  min-height: 100svh;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 Inter, system-ui, sans-serif;
+}
+
+button { font: inherit; cursor: pointer; }
+
+button:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: 3px;
+}
+
+.app-shell { min-height: 100svh; display: flex; flex-direction: column; }
+
+header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 20px;
+  padding: 20px 28px;
+}
+
+.brand { font-size: 22px; font-weight: 600; }
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 16px;
+  background: var(--soft);
+}
+
+.tabs button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 12px;
+  padding: 8px 16px;
+  background: transparent;
+  color: var(--ink);
+}
+
+.tabs [aria-selected='true'] { background: var(--blue); color: var(--surface); }
+
+main { flex: 1; }
+
+@media (max-width: 640px) {
+  header { grid-template-columns: 1fr; justify-items: center; gap: 12px; padding: 16px; }
+  .brand { font-size: 20px; }
+}
