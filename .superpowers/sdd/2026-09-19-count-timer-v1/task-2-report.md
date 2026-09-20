@@ -125,7 +125,7 @@ TEST_DATABASE_URL is required; production DATABASE_URL is never used for integra
 - Non-bootstrap requests require an existing cookie and return 401 for missing or invalid identity; they never create a new user.
 - Responses use `Cache-Control: no-store`, and database failures are returned without exposing connection details.
 
-## Validation
+## Baseline validation before fix round 1
 
 All of these checks passed on the final implementation:
 
@@ -160,3 +160,50 @@ Results were 13/13 Task 1 unit tests, 5/5 Task 2 integration tests, successful l
 ## Self-review
 
 The Task 2 requirements are covered by implementation and integration evidence. No critical or important findings remain. The test commands emit an existing Vitest warning about ESM syntax in `vitest.config.ts` while the package defaults to CommonJS, and `next build` reports the existing experimental `useTypeScriptCli` setting; both were already present in the accepted Task 1 checkpoint and do not cause a failed check. No browser check is applicable to this backend-only task.
+
+## Fix round 1 — test credential alignment
+
+The review finding was reproduced by comparing the checked-in setup files: `.env.example` advertised `test_password`, while `compose.test.yaml` provisioned `count_timer_test`. This made the documented `TEST_DATABASE_URL` fail authentication.
+
+### RED
+
+I added `tests/unit/database-config.test.ts` before changing the configuration and ran:
+
+```bash
+npm run test:unit -- tests/unit/database-config.test.ts
+```
+
+It failed as expected:
+
+```text
+AssertionError: expected 'test_password' to be 'count_timer_test'
+Tests  1 failed | 0 passed
+```
+
+### Fix and GREEN
+
+The smallest fix was changing only `compose.test.yaml` to use the documented test-only placeholder password `test_password`. The focused regression test now verifies that the example URL matches Compose’s user, password, and database, and that the database name retains the `_test` suffix.
+
+```text
+Test Files  1 passed (1)
+Tests  1 passed (1)
+```
+
+### Fix-round verification
+
+With the refreshed PostgreSQL 16 container and corrected URL, these commands passed:
+
+```bash
+TEST_DATABASE_URL='postgresql://count_timer_test:test_password@127.0.0.1:55432/count_timer_test' \
+  node scripts/migrate.mjs --test
+TEST_DATABASE_URL='postgresql://count_timer_test:test_password@127.0.0.1:55432/count_timer_test' \
+  npm run test:integration -- --reset tests/integration/identity.test.ts
+TEST_DATABASE_URL='postgresql://count_timer_test:test_password@127.0.0.1:55432/count_timer_test' \
+  node scripts/migrate.mjs --test
+npm run test:unit
+npm run lint
+npm run typecheck
+npm run build
+```
+
+The first migration applied `001_initial.sql`, the reset integration run passed 5/5 tests, and the second migration reported `Migration 001_initial.sql already applied; nothing to do.` The full unit suite passed 14/14, lint passed, typecheck passed, and the production build passed. The existing Vitest loader and Next experimental-setting warnings remain non-failing inherited warnings.
