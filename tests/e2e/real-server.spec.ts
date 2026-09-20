@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('persists real cookie identity, syncs same-context tabs, and isolates a fresh context', async ({ browser }) => {
+  test.setTimeout(30_000);
   const sharedContext = await browser.newContext();
   const first = await sharedContext.newPage();
   const second = await sharedContext.newPage();
