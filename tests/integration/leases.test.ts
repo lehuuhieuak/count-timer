@@ -111,6 +111,41 @@ describe('browser tab leases', () => {
     expect(activeTabs.rows).toEqual([{ tab_id: 'tab-a', closed_at_ms: null }]);
   });
 
+  it('pauses at the maximum stored close signal when close requests arrive out of order', async () => {
+    const identity = await createIdentity();
+
+    await touchTab(identity.userId, 'tab-a', 'open', 1_000);
+    await touchTab(identity.userId, 'tab-b', 'open', 1_000);
+    await startTimer(identity.userId, 0, { type: 'start', timer: 'up' }, 1_000);
+
+    await touchTab(identity.userId, 'tab-a', 'close', 4_000);
+    await touchTab(identity.userId, 'tab-b', 'close', 3_000);
+
+    expect((await readSnapshot(identity.userId, 3_000)).up).toEqual({
+      valueMs: 3_000,
+      startedAtMs: null,
+    });
+  });
+
+  it('preserves the newest heartbeat when an older heartbeat arrives late and reopens a closed tab', async () => {
+    const identity = await createIdentity();
+
+    await touchTab(identity.userId, 'tab-a', 'open', 1_000);
+    await startTimer(identity.userId, 0, { type: 'start', timer: 'up' }, 1_000);
+    await touchTab(identity.userId, 'tab-a', 'heartbeat', 5_000);
+    await touchTab(identity.userId, 'tab-a', 'heartbeat', 3_000);
+
+    expect((await readSnapshot(identity.userId, 94_000)).up.startedAtMs).toBe(1_000);
+
+    await touchTab(identity.userId, 'tab-a', 'close', 6_000);
+    await touchTab(identity.userId, 'tab-a', 'heartbeat', 4_000);
+    const tab = await getPool().query<{ last_seen_at_ms: string; closed_at_ms: string | null }>(
+      'SELECT last_seen_at_ms, closed_at_ms FROM browser_tabs WHERE user_id = $1 AND tab_id = $2',
+      [identity.userId, 'tab-a'],
+    );
+    expect(tab.rows).toEqual([{ last_seen_at_ms: '5000', closed_at_ms: null }]);
+  });
+
   it('does not let a stale tab close a newer tab lease', async () => {
     const identity = await createIdentity();
 

@@ -128,3 +128,55 @@ There is no `npm test` script in this repository; the unit and full integration 
 - The implementation is backend-only for Task 4. Client heartbeat scheduling, pagehide beacon wiring, BroadcastChannel behavior, and actual browser audio playback remain Task 5 work.
 
 No unresolved correctness finding remains for the requested Task 4 scope. The only material limitation is the existing non-failing tooling warnings described above; no browser or production deployment check is part of this backend task.
+
+## Fix round 1
+
+### Findings reproduced in RED
+
+I added three focused integration regressions before changing production code:
+
+1. The first alarm request after a countdown naturally reaches zero, before a read or heartbeat materializes completion.
+2. A tab close at signal time `4000` commits before the final close request for another tab arrives with `nowMs = 3000`.
+3. A heartbeat at `5000` is followed by a late heartbeat at `3000`; the newer signal must remain authoritative, and a closed tab must reopen with `closed_at_ms = NULL` without losing that timestamp.
+
+The focused RED command was run against real PostgreSQL:
+
+```bash
+TEST_DATABASE_URL='postgresql://count_timer_test:test_password@127.0.0.1:55432/count_timer_test' \
+  npm run test:integration -- --reset \
+  tests/integration/leases.test.ts tests/integration/alarms.test.ts
+```
+
+Before the fix it produced four failures across 14 tests:
+
+```text
+claims a naturally completed run ... expected granted true, received false
+rejects claims ... expected the already completed run to grant, received false
+pauses at the maximum stored close signal ... expected 3000, received 2000
+preserves the newest heartbeat ... expected startedAtMs 1000, received null
+```
+
+### Fix and GREEN
+
+- `claimCompletedAlarm` now locks the timer row, materializes a naturally completed countdown at `Date.now()`, persists that state, and then performs the existing conditional `alarm_claimed = FALSE` update. Concurrent claimers still serialize on the timer row and exactly one can update the row.
+- The final-close path queries the maximum `GREATEST(last_seen_at_ms, closed_at_ms)` signal across the user’s stored tab rows and pauses at the maximum of that value and the current close request timestamp.
+- `open` and `heartbeat` upserts now use PostgreSQL `GREATEST(browser_tabs.last_seen_at_ms, EXCLUDED.last_seen_at_ms)` and still clear `closed_at_ms`, preserving monotonic timestamps and reopen behavior.
+
+The focused fix-round suites now pass:
+
+```text
+Test Files  2 passed (2)
+Tests       14 passed (14)
+```
+
+The complete final verification also passes:
+
+```text
+Task 2–4 integration: 4 files, 29 tests passed
+Unit tests:           4 files, 16 tests passed
+Lint:                 exit 0
+Typecheck:            exit 0
+Build:                exit 0
+```
+
+The fix round changed only Task 4 implementation/tests and this report. The pre-existing untracked `docs/` reference/spec material remains untouched.

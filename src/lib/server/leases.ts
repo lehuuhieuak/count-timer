@@ -127,7 +127,17 @@ export async function touchTab(
           [userId],
         );
         if (remaining.rowCount === 0) {
-          next = pauseTimersAt(next, nowMs);
+          const signals = await client.query<{ pause_at_ms: string | null }>(
+            `SELECT MAX(GREATEST(last_seen_at_ms, COALESCE(closed_at_ms, last_seen_at_ms))) AS pause_at_ms
+             FROM browser_tabs
+             WHERE user_id = $1`,
+            [userId],
+          );
+          const storedPauseAtMs = signals.rows[0]?.pause_at_ms;
+          const pauseAtMs = storedPauseAtMs === null || storedPauseAtMs === undefined
+            ? nowMs
+            : Math.max(nowMs, safeTimestampToNumber(storedPauseAtMs, 'pause_at_ms'));
+          next = pauseTimersAt(next, pauseAtMs);
         }
       }
     } else {
@@ -135,7 +145,7 @@ export async function touchTab(
         `INSERT INTO browser_tabs (user_id, tab_id, last_seen_at_ms, closed_at_ms)
          VALUES ($1, $2, $3, NULL)
          ON CONFLICT (user_id, tab_id)
-         DO UPDATE SET last_seen_at_ms = EXCLUDED.last_seen_at_ms,
+         DO UPDATE SET last_seen_at_ms = GREATEST(browser_tabs.last_seen_at_ms, EXCLUDED.last_seen_at_ms),
                        closed_at_ms = NULL`,
         [userId, tabId, nowMs],
       );
@@ -154,7 +164,12 @@ export async function claimCompletedAlarm(userId: string, runId: string): Promis
   }
 
   return withTransaction(async (client) => {
-    await selectTimerState(client, userId);
+    const nowMs = Date.now();
+    const current = stateFromRow(await selectTimerState(client, userId), nowMs);
+    const materialized = materializeCountdownCompletion(current, nowMs);
+    if (materialized.snapshot.revision !== current.snapshot.revision) {
+      await persistTimerState(client, userId, materialized);
+    }
 
     const result = await client.query(
       `UPDATE timer_states

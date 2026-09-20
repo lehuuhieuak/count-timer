@@ -51,6 +51,19 @@ afterAll(async () => {
 });
 
 describe('countdown alarm claims', () => {
+  it('claims a naturally completed run before any read or heartbeat materializes it', async () => {
+    const identity = await createIdentity();
+    const startedAtMs = Date.now() - 2_000;
+    await touchTab(identity.userId, 'tab-a', 'open', startedAtMs);
+    let snapshot = await readSnapshot(identity.userId, startedAtMs);
+    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'set-duration', durationMs: 1_000 }, startedAtMs);
+    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'start', timer: 'down' }, startedAtMs);
+
+    const response = await postAlarms(requestWithCookie(identity.token, { runId: snapshot.downRunId }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ granted: true });
+  });
+
   it('grants exactly one concurrent claim for a completed run', async () => {
     const identity = await createIdentity();
     await touchTab(identity.userId, 'tab-a', 'open', 1_000);
@@ -80,20 +93,25 @@ describe('countdown alarm claims', () => {
 
   it('rejects claims for a running, unknown, or already claimed run', async () => {
     const identity = await createIdentity();
-    await touchTab(identity.userId, 'tab-a', 'open', 1_000);
-    let snapshot = await readSnapshot(identity.userId, 1_000);
-    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'set-duration', durationMs: 5_000 }, 1_000);
-    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'start', timer: 'down' }, 1_000);
+    const runningAtMs = Date.now();
+    await touchTab(identity.userId, 'tab-a', 'open', runningAtMs);
+    let snapshot = await readSnapshot(identity.userId, runningAtMs);
+    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'set-duration', durationMs: 5_000 }, runningAtMs);
+    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'start', timer: 'down' }, runningAtMs);
 
     const running = await postAlarms(requestWithCookie(identity.token, { runId: snapshot.downRunId }));
     const unknown = await postAlarms(requestWithCookie(identity.token, { runId: '00000000-0000-0000-0000-000000000000' }));
     expect(await running.json()).toEqual({ granted: false });
     expect(await unknown.json()).toEqual({ granted: false });
 
-    await touchTab(identity.userId, 'tab-a', 'close', 7_000);
-    const completed = await readSnapshot(identity.userId, 7_000);
-    const firstClaim = await postAlarms(requestWithCookie(identity.token, { runId: completed.downRunId }));
-    const secondClaim = await postAlarms(requestWithCookie(identity.token, { runId: completed.downRunId }));
+    const completedIdentity = await createIdentity();
+    const completedAtMs = Date.now() - 2_000;
+    await touchTab(completedIdentity.userId, 'tab-a', 'open', completedAtMs);
+    let completed = await readSnapshot(completedIdentity.userId, completedAtMs);
+    completed = await executeCommand(completedIdentity.userId, completed.revision, { type: 'set-duration', durationMs: 1_000 }, completedAtMs);
+    completed = await executeCommand(completedIdentity.userId, completed.revision, { type: 'start', timer: 'down' }, completedAtMs);
+    const firstClaim = await postAlarms(requestWithCookie(completedIdentity.token, { runId: completed.downRunId }));
+    const secondClaim = await postAlarms(requestWithCookie(completedIdentity.token, { runId: completed.downRunId }));
     expect(await firstClaim.json()).toEqual({ granted: true });
     expect(await secondClaim.json()).toEqual({ granted: false });
   });
