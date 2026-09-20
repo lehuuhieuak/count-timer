@@ -92,3 +92,21 @@ test('font fallback remains within a narrow viewport for long hours', async ({ p
   expect(fonts.digits).toContain('JetBrains Mono');
   expect(fonts.externalSheets).toBe(0);
 });
+
+test('loads the checked-in Inter and JetBrains Mono font assets before fallback layout', async ({ page }) => {
+  const fontRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.resourceType() === 'font') fontRequests.push(request.url());
+  });
+  await installTimerApi(page, createMockTimerStore(visualSnapshots.upLong));
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto('/');
+  await page.evaluate(() => document.fonts.ready);
+  expect(fontRequests.some((url) => url.includes('/_next/static/media/'))).toBe(true);
+  const loadedFonts = await page.evaluate(() => [...document.fonts]
+    .filter((font) => font.status === 'loaded')
+    .map((font) => font.family));
+  expect(loadedFonts).toContain('Inter');
+  expect(loadedFonts).toContain('JetBrains Mono');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

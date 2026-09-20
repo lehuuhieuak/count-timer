@@ -78,28 +78,36 @@ export type MockTimerStore = {
   timerPosts: number;
   timerGets: number;
   tabActions: string[];
+  tabRequests: Array<{ action: string; tabId: string }>;
+  activeTabIds: Set<string>;
   alarmPosts: number;
   holdTimerPosts: boolean;
   holdTimerGets: boolean;
   failTimerPosts: boolean;
   failAlarmPosts: boolean;
+  holdTabClose: boolean;
   releaseTimerPosts: () => void;
   releaseTimerGets: () => void;
+  releaseTabClose: () => void;
 };
 
 export function createMockTimerStore(snapshot = makeSnapshot()): MockTimerStore {
   let releasePost: (() => void) | null = null;
   let releaseGet: (() => void) | null = null;
+  let releaseClose: (() => void) | null = null;
   return {
     snapshot,
     timerPosts: 0,
     timerGets: 0,
     tabActions: [],
+    tabRequests: [],
+    activeTabIds: new Set<string>(),
     alarmPosts: 0,
     holdTimerPosts: false,
     holdTimerGets: false,
     failTimerPosts: false,
     failAlarmPosts: false,
+    holdTabClose: false,
     releaseTimerPosts: () => {
       releasePost?.();
       releasePost = null;
@@ -107,6 +115,10 @@ export function createMockTimerStore(snapshot = makeSnapshot()): MockTimerStore 
     releaseTimerGets: () => {
       releaseGet?.();
       releaseGet = null;
+    },
+    releaseTabClose: () => {
+      releaseClose?.();
+      releaseClose = null;
     },
   };
 }
@@ -123,8 +135,26 @@ export async function installTimerApi(page: Page, store = createMockTimerStore()
   await page.route('**/api/bootstrap', (route) => fulfillJson(route, store.snapshot));
   await page.route('**/api/tabs', async (route) => {
     const request = route.request();
-    const body = request.postDataJSON() as { action?: string } | null;
+    const body = request.postDataJSON() as { action?: string; tabId?: string } | null;
     if (body?.action) store.tabActions.push(body.action);
+    if (body?.action && body.tabId) {
+      store.tabRequests.push({ action: body.action, tabId: body.tabId });
+      if (body.action === 'open') {
+        store.activeTabIds.add(body.tabId);
+        await fulfillJson(route, store.snapshot);
+        return;
+      }
+      if (body.action === 'close') {
+        await fulfillJson(route, store.snapshot);
+        if (store.holdTabClose) {
+          await new Promise<void>((resolve) => {
+            store.releaseTabClose = resolve;
+          });
+        }
+        store.activeTabIds.delete(body.tabId);
+        return;
+      }
+    }
     await fulfillJson(route, store.snapshot);
   });
   await page.route('**/api/timers', async (route) => {

@@ -32,7 +32,7 @@ async function postTabAction(tabId: string, action: 'open' | 'heartbeat' | 'clos
 }
 
 export function createTabSync(options: TabSyncOptions) {
-  const tabId = makeTabId();
+  let tabId = makeTabId();
   let destroyed = false;
   let opened = false;
   let heartbeatId: number | null = null;
@@ -81,7 +81,8 @@ export function createTabSync(options: TabSyncOptions) {
 
   const onPageHide = () => {
     if (destroyed || !opened) return;
-    const body = JSON.stringify({ tabId, action: 'close' });
+    const closingTabId = tabId;
+    const body = JSON.stringify({ tabId: closingTabId, action: 'close' });
     const blob = new Blob([body], { type: 'application/json' });
     if (!navigator.sendBeacon('/api/tabs', blob)) {
       void fetch('/api/tabs', {
@@ -98,6 +99,8 @@ export function createTabSync(options: TabSyncOptions) {
 
   const onPageShow = () => {
     if (destroyed) return;
+    if (opened) return;
+    tabId = makeTabId();
     void open().then(options.onReopen).catch(() => options.onError());
   };
 

@@ -36,6 +36,24 @@ test('reopens the lease on pageshow and applies a heartbeat snapshot', async ({ 
   await expect.poll(() => store.tabActions.filter((action) => action === 'open')).toHaveLength(2);
 });
 
+test('uses a fresh lease id when a delayed pagehide close races pageshow open', async ({ page }) => {
+  const store = createMockTimerStore();
+  store.holdTabClose = true;
+  await installTimerApi(page, store);
+  await page.goto('/');
+  await expect(page.getByText('Đã đồng bộ')).toBeVisible();
+  const initialTabId = store.tabRequests.find((request) => request.action === 'open')?.tabId;
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
+  await expect.poll(() => store.tabRequests.filter((request) => request.action === 'open')).toHaveLength(2);
+  const openIds = store.tabRequests.filter((request) => request.action === 'open').map((request) => request.tabId);
+  expect(openIds[0]).toBe(initialTabId);
+  expect(openIds[1]).not.toBe(initialTabId);
+  store.releaseTabClose();
+  await expect.poll(() => store.activeTabIds.size).toBe(1);
+  expect(store.activeTabIds.has(openIds[1])).toBe(true);
+});
+
 test('reads the authoritative snapshot once after a command timeout', async ({ page }) => {
   const store = createMockTimerStore();
   store.holdTimerPosts = true;
@@ -48,6 +66,32 @@ test('reads the authoritative snapshot once after a command timeout', async ({ p
   store.releaseTimerPosts();
   await expect(page.getByText('Đã đồng bộ')).toBeVisible();
   expect(store.timerGets).toBeGreaterThan(0);
+});
+
+test('does not show a false reset error when timeout read-back proves reset applied', async ({ page }) => {
+  const now = Date.now();
+  const store = createMockTimerStore({
+    ...createMockTimerStore().snapshot,
+    serverNowMs: now,
+    up: { valueMs: 500, startedAtMs: now - 500 },
+  });
+  store.holdTimerPosts = true;
+  await installTimerApi(page, store);
+  await page.clock.install({ time: now });
+  await page.goto('/');
+  await page.getByRole('button', { name: '↺ Đặt lại', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Hủy bỏ', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Xác nhận đặt lại', exact: true }).click();
+  await expect(page.getByText('Đang lưu')).toBeVisible();
+  store.snapshot = {
+    ...store.snapshot,
+    revision: 1,
+    up: { valueMs: 0, startedAtMs: null },
+  };
+  await page.clock.fastForward(8_001);
+  store.releaseTimerPosts();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.getByText('Không thể đồng bộ thao tác đặt lại.')).toBeHidden();
 });
 
 test('does not let an older focus read overwrite a newer command response', async ({ page }) => {

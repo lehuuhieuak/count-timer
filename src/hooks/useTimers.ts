@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { interpolateTimer } from '../features/timer/client-time';
 import type { Command, Snapshot } from '../features/timer/types';
 import { playAlarm, unlockAudio } from './audio';
-import { canAcceptSnapshot, shouldClaimExpiredCountdown } from './snapshot-guards';
+import { canAcceptSnapshot, isResetApplied, shouldClaimExpiredCountdown } from './snapshot-guards';
 import { createTabSync } from './tab-sync';
 
 export type SyncState = 'loading' | 'synced' | 'saving' | 'unsynced';
@@ -86,7 +86,7 @@ export function useTimers(): UseTimersResult {
         if (!commandPendingRef.current) setSyncState('synced');
         onlineRef.current = true;
       }
-      return next;
+      return accepted ? next : null;
     } catch {
       if (!commandPendingRef.current) {
         setConnected(false);
@@ -291,7 +291,13 @@ export function useTimers(): UseTimersResult {
         setPending(false);
         const readBack = await readSnapshot();
         if (readBack) {
-          setCommandError(failureMessage);
+          if (command.type === 'reset' && isResetApplied(readBack, command)) {
+            setCommandError(null);
+            setSyncState('synced');
+            return true;
+          }
+          if (command.type === 'reset') setCommandError(failureMessage);
+          else setCommandError(null);
           setSyncState('synced');
           return false;
         }
