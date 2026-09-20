@@ -83,4 +83,12 @@ test('font fallback remains within a narrow viewport for long hours', async ({ p
   await page.goto('/');
   await page.evaluate(() => document.fonts.ready);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const fonts = await page.evaluate(() => ({
+    body: getComputedStyle(document.body).fontFamily,
+    digits: getComputedStyle(document.querySelector('.digits')!).fontFamily,
+    externalSheets: [...document.styleSheets].filter((sheet) => sheet.href && !sheet.href.startsWith(location.origin)).length,
+  }));
+  expect(fonts.body).toContain('Inter');
+  expect(fonts.digits).toContain('JetBrains Mono');
+  expect(fonts.externalSheets).toBe(0);
 });

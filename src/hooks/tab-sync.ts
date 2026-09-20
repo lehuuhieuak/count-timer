@@ -4,7 +4,8 @@ import type { Snapshot } from '../features/timer/types';
 
 type TabSyncOptions = {
   onSnapshotNotice: () => void;
-  onReopen: () => void;
+  onReopen: (snapshot: Snapshot) => void;
+  onHeartbeatSnapshot: (snapshot: Snapshot) => void;
   onError: () => void;
 };
 
@@ -36,18 +37,42 @@ export function createTabSync(options: TabSyncOptions) {
   let opened = false;
   let heartbeatId: number | null = null;
   let channel: BroadcastChannel | null = null;
+  let openPromise: Promise<Snapshot> | null = null;
+
+  const stopHeartbeat = () => {
+    if (heartbeatId !== null) window.clearInterval(heartbeatId);
+    heartbeatId = null;
+  };
+
+  const startHeartbeat = () => {
+    if (heartbeatId === null) heartbeatId = window.setInterval(sendHeartbeat, HEARTBEAT_MS);
+  };
 
   const sendHeartbeat = () => {
     if (destroyed || !opened || !navigator.onLine) return;
-    void postTabAction(tabId, 'heartbeat').catch(options.onError);
+    void postTabAction(tabId, 'heartbeat')
+      .then((snapshot) => {
+        if (!destroyed && opened) options.onHeartbeatSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (!destroyed && opened) options.onError();
+      });
   };
 
   const open = async (): Promise<Snapshot> => {
     if (destroyed) throw new Error('Tab sync has been destroyed.');
-    const snapshot = await postTabAction(tabId, 'open');
-    opened = true;
-    if (heartbeatId === null) heartbeatId = window.setInterval(sendHeartbeat, HEARTBEAT_MS);
-    return snapshot;
+    if (openPromise) return openPromise;
+    openPromise = postTabAction(tabId, 'open')
+      .then((snapshot) => {
+        if (destroyed) throw new Error('Tab sync has been destroyed.');
+        opened = true;
+        startHeartbeat();
+        return snapshot;
+      })
+      .finally(() => {
+        openPromise = null;
+      });
+    return openPromise;
   };
 
   const announce = () => {
@@ -68,11 +93,12 @@ export function createTabSync(options: TabSyncOptions) {
       }).catch(() => undefined);
     }
     opened = false;
+    stopHeartbeat();
   };
 
   const onPageShow = () => {
     if (destroyed) return;
-    options.onReopen();
+    void open().then(options.onReopen).catch(() => options.onError());
   };
 
   const onChannelMessage = (event: MessageEvent<{ type?: string; tabId?: string }>) => {
@@ -96,7 +122,7 @@ export function createTabSync(options: TabSyncOptions) {
     destroy: () => {
       if (destroyed) return;
       destroyed = true;
-      if (heartbeatId !== null) window.clearInterval(heartbeatId);
+      stopHeartbeat();
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('pageshow', onPageShow);
       channel?.removeEventListener('message', onChannelMessage);

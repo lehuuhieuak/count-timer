@@ -103,11 +103,13 @@ export function TimerPage() {
       <ResetDialog
         open={resetOpen}
         formattedValue={selectedValue}
-        disabled={timers.pending}
+        confirmDisabled={disabled}
+        error={timers.commandError}
         onCancel={() => setResetOpen(false)}
         onConfirm={() => {
-          setResetOpen(false);
-          void timers.send({ type: 'reset', timer: 'up' });
+          void timers.send({ type: 'reset', timer: 'up' }).then((succeeded) => {
+            if (succeeded) setResetOpen(false);
+          });
         }}
       />
     </div>

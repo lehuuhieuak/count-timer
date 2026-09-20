@@ -6,7 +6,7 @@ import { MAX_DURATION_MS, MIN_DURATION_MS } from '../../features/timer/engine';
 type CountdownSettingsProps = {
   durationMs: number;
   disabled: boolean;
-  onSetDuration: (durationMs: number) => Promise<void>;
+  onSetDuration: (durationMs: number) => Promise<unknown>;
   children?: ReactNode;
 };
 

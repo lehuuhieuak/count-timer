@@ -76,23 +76,37 @@ function applyCommand(snapshot: Snapshot, command: Command): Snapshot {
 export type MockTimerStore = {
   snapshot: Snapshot;
   timerPosts: number;
+  timerGets: number;
   tabActions: string[];
+  alarmPosts: number;
   holdTimerPosts: boolean;
+  holdTimerGets: boolean;
   failTimerPosts: boolean;
+  failAlarmPosts: boolean;
   releaseTimerPosts: () => void;
+  releaseTimerGets: () => void;
 };
 
 export function createMockTimerStore(snapshot = makeSnapshot()): MockTimerStore {
-  let release: (() => void) | null = null;
+  let releasePost: (() => void) | null = null;
+  let releaseGet: (() => void) | null = null;
   return {
     snapshot,
     timerPosts: 0,
+    timerGets: 0,
     tabActions: [],
+    alarmPosts: 0,
     holdTimerPosts: false,
+    holdTimerGets: false,
     failTimerPosts: false,
+    failAlarmPosts: false,
     releaseTimerPosts: () => {
-      release?.();
-      release = null;
+      releasePost?.();
+      releasePost = null;
+    },
+    releaseTimerGets: () => {
+      releaseGet?.();
+      releaseGet = null;
     },
   };
 }
@@ -115,7 +129,14 @@ export async function installTimerApi(page: Page, store = createMockTimerStore()
   });
   await page.route('**/api/timers', async (route) => {
     if (route.request().method() === 'GET') {
-      await fulfillJson(route, store.snapshot);
+      store.timerGets += 1;
+      const responseSnapshot = store.snapshot;
+      if (store.holdTimerGets) {
+        await new Promise<void>((resolve) => {
+          store.releaseTimerGets = resolve;
+        });
+      }
+      await fulfillJson(route, responseSnapshot);
       return;
     }
     store.timerPosts += 1;
@@ -132,7 +153,12 @@ export async function installTimerApi(page: Page, store = createMockTimerStore()
     store.snapshot = applyCommand(store.snapshot, body.command);
     await fulfillJson(route, store.snapshot);
   });
-  await page.route('**/api/alarms', (route) => fulfillJson(route, { granted: true }));
+  await page.route('**/api/alarms', (route) => {
+    store.alarmPosts += 1;
+    return store.failAlarmPosts
+      ? fulfillJson(route, { error: 'service_unavailable' }, 503)
+      : fulfillJson(route, { granted: true });
+  });
   return store;
 }
 

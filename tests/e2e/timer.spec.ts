@@ -69,6 +69,31 @@ test.describe('timer controls', () => {
     await page.getByRole('button', { name: 'Xác nhận đặt lại', exact: true }).click();
     await expect(page.getByText('00:00:00').first()).toBeVisible();
   });
+
+  test('keeps reset cancellation available and closes only after a successful reset', async ({ page }) => {
+    const store = createMockTimerStore();
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    await installTimerApi(page, store);
+    await page.goto('/');
+    await page.getByRole('button', { name: '↺ Đặt lại', exact: true }).click();
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await expect(page.getByRole('button', { name: 'Hủy bỏ', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Xác nhận đặt lại', exact: true })).toBeDisabled();
+    await page.getByRole('button', { name: 'Hủy bỏ', exact: true }).click();
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect(page.getByText('Đã đồng bộ')).toBeVisible();
+
+    await page.getByRole('button', { name: '↺ Đặt lại', exact: true }).click();
+    store.failTimerPosts = true;
+    await page.getByRole('button', { name: 'Xác nhận đặt lại', exact: true }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByText('Không thể đồng bộ thao tác đặt lại.')).toBeVisible();
+    store.failTimerPosts = false;
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect(page.getByText('Đã đồng bộ')).toBeVisible();
+    await page.getByRole('button', { name: 'Xác nhận đặt lại', exact: true }).click();
+    await expect(page.getByRole('dialog')).toBeHidden();
+  });
 });
 
 test.describe('timer presence', () => {

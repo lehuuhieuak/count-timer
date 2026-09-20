@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { interpolateTimer } from '../features/timer/client-time';
 import type { Command, Snapshot } from '../features/timer/types';
 import { playAlarm, unlockAudio } from './audio';
+import { canAcceptSnapshot, shouldClaimExpiredCountdown } from './snapshot-guards';
 import { createTabSync } from './tab-sync';
 
 export type SyncState = 'loading' | 'synced' | 'saving' | 'unsynced';
@@ -15,14 +16,22 @@ export type UseTimersResult = {
   connected: boolean;
   pending: boolean;
   syncState: SyncState;
-  send: (command: Command) => Promise<void>;
+  commandError: string | null;
+  send: (command: Command) => Promise<boolean>;
   unlock: () => Promise<void>;
 };
 
 type SnapshotError = { snapshot?: Snapshot };
+type SnapshotSource = 'bootstrap' | 'read' | 'command' | 'tab' | 'heartbeat';
 
 function monotonicNow(): number {
   return typeof performance === 'undefined' ? 0 : performance.now();
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === 'AbortError'
+    : Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'AbortError');
 }
 
 export function useTimers(): UseTimersResult {
@@ -30,26 +39,39 @@ export function useTimers(): UseTimersResult {
   const [connected, setConnected] = useState(false);
   const [pending, setPending] = useState(false);
   const [syncState, setSyncState] = useState<SyncState>('loading');
+  const [commandError, setCommandError] = useState<string | null>(null);
   const [, setTick] = useState(0);
   const snapshotRef = useRef<Snapshot | null>(null);
+  const commandPendingRef = useRef(false);
   const [receivedAtMonotonicMs, setReceivedAtMonotonicMs] = useState(0);
   const tabSyncRef = useRef<ReturnType<typeof createTabSync> | null>(null);
   const previousDownRef = useRef<{ runId: string; valueMs: number; started: boolean } | null>(null);
   const claimedRunsRef = useRef(new Set<string>());
+  const alarmInFlightRef = useRef(new Set<string>());
+  const alarmRetryRef = useRef(new Set<string>());
+  const alarmAttemptEpochRef = useRef(new Map<string, number>());
+  const readEpochRef = useRef(0);
   const onlineRef = useRef(true);
+  const activeRef = useRef(true);
 
-  const acceptSnapshot = useCallback((next: Snapshot) => {
+  const acceptSnapshot = useCallback((next: Snapshot, source: SnapshotSource): boolean => {
+    if (!canAcceptSnapshot(snapshotRef.current, next, source === 'read' && commandPendingRef.current)) {
+      return false;
+    }
     snapshotRef.current = next;
     setReceivedAtMonotonicMs(monotonicNow());
     setSnapshot(next);
     setConnected(true);
+    return true;
   }, []);
 
   const readSnapshot = useCallback(async (): Promise<Snapshot | null> => {
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       onlineRef.current = false;
-      setConnected(false);
-      setSyncState('unsynced');
+      if (!commandPendingRef.current) {
+        setConnected(false);
+        setSyncState('unsynced');
+      }
       return null;
     }
 
@@ -57,25 +79,38 @@ export function useTimers(): UseTimersResult {
       const response = await fetch('/api/timers', { credentials: 'include', cache: 'no-store' });
       if (!response.ok) throw new Error('Snapshot read failed.');
       const next = await response.json() as Snapshot;
-      acceptSnapshot(next);
-      setSyncState('synced');
-      onlineRef.current = true;
+      if (!activeRef.current) return null;
+      const accepted = acceptSnapshot(next, 'read');
+      if (accepted) {
+        readEpochRef.current += 1;
+        if (!commandPendingRef.current) setSyncState('synced');
+        onlineRef.current = true;
+      }
       return next;
     } catch {
-      setConnected(false);
-      setSyncState('unsynced');
+      if (!commandPendingRef.current) {
+        setConnected(false);
+        setSyncState('unsynced');
+      }
       return null;
     }
   }, [acceptSnapshot]);
 
   useEffect(() => {
-    let active = true;
+    activeRef.current = true;
     const tabSync = createTabSync({
       onSnapshotNotice: () => { void readSnapshot(); },
-      onReopen: () => { void readSnapshot(); },
+      onReopen: (next) => {
+        if (acceptSnapshot(next, 'tab')) setSyncState('synced');
+      },
+      onHeartbeatSnapshot: (next) => {
+        if (acceptSnapshot(next, 'heartbeat') && !commandPendingRef.current) setSyncState('synced');
+      },
       onError: () => {
-        setConnected(false);
-        setSyncState('unsynced');
+        if (!commandPendingRef.current) {
+          setConnected(false);
+          setSyncState('unsynced');
+        }
       },
     });
     tabSyncRef.current = tabSync;
@@ -89,15 +124,15 @@ export function useTimers(): UseTimersResult {
         });
         if (!response.ok) throw new Error('Bootstrap failed.');
         const bootstrapped = await response.json() as Snapshot;
-        if (!active) return;
-        acceptSnapshot(bootstrapped);
+        if (!activeRef.current) return;
+        acceptSnapshot(bootstrapped, 'bootstrap');
         const opened = await tabSync.open();
-        if (!active) return;
-        acceptSnapshot(opened);
+        if (!activeRef.current) return;
+        acceptSnapshot(opened, 'tab');
         setSyncState('synced');
         onlineRef.current = true;
       } catch {
-        if (!active) return;
+        if (!activeRef.current) return;
         setConnected(false);
         setSyncState('unsynced');
       }
@@ -109,8 +144,10 @@ export function useTimers(): UseTimersResult {
     };
     const onOffline = () => {
       onlineRef.current = false;
-      setConnected(false);
-      setSyncState('unsynced');
+      if (!commandPendingRef.current) {
+        setConnected(false);
+        setSyncState('unsynced');
+      }
     };
     const onFocus = () => { void readSnapshot(); };
     window.addEventListener('online', onOnline);
@@ -119,7 +156,7 @@ export function useTimers(): UseTimersResult {
     void bootstrap();
 
     return () => {
-      active = false;
+      activeRef.current = false;
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
       window.removeEventListener('focus', onFocus);
@@ -149,7 +186,11 @@ export function useTimers(): UseTimersResult {
   useEffect(() => {
     if (!displaySnapshot) return;
     const previous = previousDownRef.current;
-    if (displaySnapshot.down.startedAtMs === null || displaySnapshot.down.valueMs > 0) {
+    const expiredNow = displaySnapshot.down.valueMs <= 0 && displaySnapshot.down.startedAtMs !== null;
+    const completedRetry = displaySnapshot.completedRunId === displaySnapshot.downRunId
+      && alarmRetryRef.current.has(displaySnapshot.downRunId)
+      && alarmAttemptEpochRef.current.get(displaySnapshot.downRunId) !== readEpochRef.current;
+    if (!expiredNow && !completedRetry) {
       previousDownRef.current = {
         runId: displaySnapshot.downRunId,
         valueMs: displaySnapshot.down.valueMs,
@@ -158,17 +199,18 @@ export function useTimers(): UseTimersResult {
       return;
     }
 
-    const crossedZero = previous?.runId === displaySnapshot.downRunId && previous.started && previous.valueMs > 0;
+    const shouldAttempt = completedRetry || shouldClaimExpiredCountdown(displaySnapshot, previous);
     previousDownRef.current = {
       runId: displaySnapshot.downRunId,
       valueMs: displaySnapshot.down.valueMs,
-      started: true,
+      started: displaySnapshot.down.startedAtMs !== null,
     };
-    if (!crossedZero || claimedRunsRef.current.has(displaySnapshot.downRunId)) return;
-    claimedRunsRef.current.add(displaySnapshot.downRunId);
-
     const runId = displaySnapshot.downRunId;
+    if (!shouldAttempt || claimedRunsRef.current.has(runId) || alarmInFlightRef.current.has(runId)) return;
+    alarmInFlightRef.current.add(runId);
+    alarmAttemptEpochRef.current.set(runId, readEpochRef.current);
     const soundEnabled = displaySnapshot.soundEnabled;
+
     const claimAndRefresh = async () => {
       try {
         const response = await fetch('/api/alarms', {
@@ -177,27 +219,43 @@ export function useTimers(): UseTimersResult {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ runId }),
         });
+        if (!response.ok) throw new Error('Alarm claim failed.');
         const result = await response.json() as { granted?: boolean };
-        if (soundEnabled && response.ok && result.granted) await playAlarm();
+        if (result.granted) {
+          claimedRunsRef.current.add(runId);
+          alarmRetryRef.current.delete(runId);
+          if (soundEnabled) await playAlarm();
+        } else {
+          alarmRetryRef.current.delete(runId);
+        }
       } catch {
-        // Hết giờ remains visible even when the alarm claim or audio fails.
+        alarmRetryRef.current.add(runId);
       } finally {
+        alarmInFlightRef.current.delete(runId);
+        // The read that follows this claim is reconciliation, not a new retry opportunity.
+        // A later focus, tab notice, or heartbeat advances the read epoch and may retry.
+        alarmAttemptEpochRef.current.set(runId, readEpochRef.current + 1);
         void readSnapshot();
       }
     };
     void claimAndRefresh();
   }, [displaySnapshot, readSnapshot]);
 
-  const send = useCallback(async (command: Command) => {
+  const send = useCallback(async (command: Command): Promise<boolean> => {
     const current = snapshotRef.current;
-    if (!current || pending || !onlineRef.current) {
+    if (!current || commandPendingRef.current || !onlineRef.current) {
       setSyncState('unsynced');
-      return;
+      return false;
     }
 
     void unlockAudio();
+    commandPendingRef.current = true;
     setPending(true);
+    setCommandError(null);
     setSyncState('saving');
+    const failureMessage = command.type === 'reset'
+      ? 'Không thể đồng bộ thao tác đặt lại.'
+      : 'Không thể đồng bộ thao tác.';
     try {
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), 8_000);
@@ -216,23 +274,37 @@ export function useTimers(): UseTimersResult {
 
       const body = await response.json() as Snapshot & SnapshotError;
       if (response.status === 409 && body.snapshot) {
-        acceptSnapshot(body.snapshot);
+        acceptSnapshot(body.snapshot, 'command');
         tabSyncRef.current?.announce();
         setSyncState('synced');
-        return;
+        return false;
       }
       if (!response.ok) throw new Error('Timer command failed.');
-      acceptSnapshot(body);
+      acceptSnapshot(body, 'command');
       tabSyncRef.current?.announce();
       setSyncState('synced');
       onlineRef.current = true;
-    } catch {
+      return true;
+    } catch (error) {
+      if (isAbortError(error)) {
+        commandPendingRef.current = false;
+        setPending(false);
+        const readBack = await readSnapshot();
+        if (readBack) {
+          setCommandError(failureMessage);
+          setSyncState('synced');
+          return false;
+        }
+      }
       setConnected(false);
+      setCommandError(failureMessage);
       setSyncState('unsynced');
+      return false;
     } finally {
+      commandPendingRef.current = false;
       setPending(false);
     }
-  }, [acceptSnapshot, pending]);
+  }, [acceptSnapshot, readSnapshot]);
 
-  return { snapshot, displaySnapshot, connected, pending, syncState, send, unlock: unlockAudio };
+  return { snapshot, displaySnapshot, connected, pending, syncState, commandError, send, unlock: unlockAudio };
 }
