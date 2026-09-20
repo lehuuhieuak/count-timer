@@ -24,7 +24,8 @@ export function isResetApplied(snapshot: Snapshot, command: Command): boolean {
     && snapshot.completedRunId === null;
 }
 
-export function isCommandApplied(snapshot: Snapshot, command: Command): boolean {
+export function isCommandApplied(snapshot: Snapshot, command: Command, previousRevision?: number): boolean {
+  if (previousRevision !== undefined && snapshot.revision <= previousRevision) return false;
   if (command.type === 'reset') return isResetApplied(snapshot, command);
   if (command.type === 'start' || command.type === 'pause') {
     return (snapshot[command.timer].startedAtMs !== null) === (command.type === 'start');

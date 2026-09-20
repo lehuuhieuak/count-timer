@@ -145,7 +145,7 @@ export function useTimers(): UseTimersResult {
         setSyncState('synced');
         onlineRef.current = true;
       } catch {
-        if (!activeRef.current) return;
+        if (!activeRef.current || tabReadyRef.current) return;
         setConnected(false);
         setSyncState('unsynced');
       }
@@ -304,7 +304,7 @@ export function useTimers(): UseTimersResult {
         commandPendingRef.current = false;
         const readBack = await readSnapshot();
         if (readBack) {
-          const applied = isCommandApplied(readBack, command);
+          const applied = isCommandApplied(readBack, command, current.revision);
           setCommandError(applied ? null : failureMessage);
           setSyncState(applied ? 'synced' : 'unsynced');
           setConnected(tabReadyRef.current);

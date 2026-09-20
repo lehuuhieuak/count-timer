@@ -50,4 +50,10 @@ describe('snapshot guards', () => {
     expect(isCommandApplied(snapshot({ durationMs: 5_000, down: { valueMs: 5_000, startedAtMs: null } }), { type: 'set-duration', durationMs: 5_000 })).toBe(true);
     expect(isCommandApplied(snapshot({ soundEnabled: false }), { type: 'set-sound', enabled: false })).toBe(true);
   });
+
+  it('requires a newer revision when proving a timed-out command', () => {
+    const sameState = snapshot({ soundEnabled: false, revision: 4 });
+    expect(isCommandApplied(sameState, { type: 'set-sound', enabled: false }, 4)).toBe(false);
+    expect(isCommandApplied(sameState, { type: 'set-sound', enabled: false }, 3)).toBe(true);
+  });
 });

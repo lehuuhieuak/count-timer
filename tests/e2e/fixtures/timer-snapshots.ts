@@ -80,7 +80,7 @@ export type MockTimerStore = {
   tabActions: string[];
   tabRequests: Array<{ action: string; tabId: string }>;
   activeTabIds: Set<string>;
-  tabOpenWaiters: Array<() => void>;
+  tabOpenWaiters: Array<(succeed: boolean) => void>;
   alarmPosts: number;
   holdTimerPosts: boolean;
   holdTimerGets: boolean;
@@ -91,6 +91,8 @@ export type MockTimerStore = {
   releaseTimerPosts: () => void;
   releaseTimerGets: () => void;
   releaseTabOpen: () => void;
+  releaseLatestTabOpen: () => void;
+  failTabOpen: () => void;
   releaseTabClose: () => void;
 };
 
@@ -122,7 +124,13 @@ export function createMockTimerStore(snapshot = makeSnapshot()): MockTimerStore 
       releaseGet = null;
     },
     releaseTabOpen: () => {
-      store.tabOpenWaiters.shift()?.();
+      store.tabOpenWaiters.shift()?.(true);
+    },
+    releaseLatestTabOpen: () => {
+      store.tabOpenWaiters.pop()?.(true);
+    },
+    failTabOpen: () => {
+      store.tabOpenWaiters.shift()?.(false);
     },
     releaseTabClose: () => {
       releaseClose?.();
@@ -150,9 +158,13 @@ export async function installTimerApi(page: Page, store = createMockTimerStore()
       store.tabRequests.push({ action: body.action, tabId: body.tabId });
       if (body.action === 'open') {
         if (store.holdTabOpen) {
-          await new Promise<void>((resolve) => {
+          const succeeded = await new Promise<boolean>((resolve) => {
             store.tabOpenWaiters.push(resolve);
           });
+          if (!succeeded) {
+            await fulfillJson(route, { error: 'service_unavailable' }, 503);
+            return;
+          }
         }
         store.activeTabIds.add(body.tabId);
         await fulfillJson(route, store.snapshot);

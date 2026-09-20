@@ -82,6 +82,24 @@ test('invalidates a delayed open on pagehide and closes its stale lease after pa
   expect(store.activeTabIds.has(openIds[1])).toBe(true);
 });
 
+test('keeps a successful pageshow reopen synced after the stale bootstrap open fails', async ({ page }) => {
+  const store = createMockTimerStore();
+  store.holdTabOpen = true;
+  await installTimerApi(page, store);
+  await page.goto('/');
+  await expect.poll(() => store.tabRequests.filter((request) => request.action === 'open')).toHaveLength(1);
+
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
+  await expect.poll(() => store.tabRequests.filter((request) => request.action === 'open')).toHaveLength(2);
+
+  store.releaseLatestTabOpen();
+  await expect(page.getByText('Đã đồng bộ')).toBeVisible({ timeout: 10_000 });
+  store.failTabOpen();
+  await expect(page.getByText('Đã đồng bộ')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Bắt đầu', exact: true })).toBeEnabled();
+});
+
 test('uses a fresh lease id when a delayed pagehide close races pageshow open', async ({ page }) => {
   const store = createMockTimerStore();
   store.holdTabClose = true;
