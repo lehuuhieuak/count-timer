@@ -12,7 +12,7 @@ export default defineConfig({
     ...devices['Desktop Chrome'],
   },
   webServer: {
-    command: 'APP_ORIGIN=http://127.0.0.1:34100 DATABASE_URL=postgresql://count_timer_test:test_password@127.0.0.1:55432/count_timer_test npm run dev -- --hostname 127.0.0.1 --port 34100',
+    command: 'TEST_DATABASE_URL=postgresql://count_timer_test:test_password@127.0.0.1:55432/count_timer_test npm run db:migrate:test && APP_ORIGIN=http://127.0.0.1:34100 DATABASE_URL=postgresql://count_timer_test:test_password@127.0.0.1:55432/count_timer_test npm run dev -- --hostname 127.0.0.1 --port 34100',
     url: 'http://127.0.0.1:34100',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

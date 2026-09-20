@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
     "test:e2e": "playwright test",
+    "db:migrate:test": "node scripts/migrate.mjs --test",
     "test:unit": "vitest run",
     "test:integration": "node scripts/test-integration.mjs"
   },
