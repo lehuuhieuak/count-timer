@@ -166,9 +166,9 @@ export async function claimCompletedAlarm(userId: string, runId: string): Promis
   return withTransaction(async (client) => {
     const nowMs = Date.now();
     const current = stateFromRow(await selectTimerState(client, userId), nowMs);
-    const materialized = materializeCountdownCompletion(current, nowMs);
-    if (materialized.snapshot.revision !== current.snapshot.revision) {
-      await persistTimerState(client, userId, materialized);
+    const reconciled = await reconcilePresenceInTransaction(client, userId, current, nowMs);
+    if (reconciled.snapshot.revision !== current.snapshot.revision) {
+      await persistTimerState(client, userId, reconciled);
     }
 
     const result = await client.query(

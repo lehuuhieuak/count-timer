@@ -180,3 +180,49 @@ Build:                exit 0
 ```
 
 The fix round changed only Task 4 implementation/tests and this report. The pre-existing untracked `docs/` reference/spec material remains untouched.
+
+## Fix round 2
+
+### Finding reproduced in RED
+
+I added a deterministic integration regression for the case where the only tab opens and starts a countdown at `1000ms`, sends no beacon or heartbeat, and the first alarm request arrives exactly at `91000ms`. The test freezes `Date.now()` with Vitest so the 90-second lease boundary is exact. It requires the claim to return `false` and the countdown to be stored paused at its `1000ms` signal with no completed run.
+
+The focused RED command was run against real PostgreSQL:
+
+```bash
+TEST_DATABASE_URL='postgresql://count_timer_test:test_password@127.0.0.1:55432/count_timer_test' \
+  npm run test:integration -- --reset \
+  tests/integration/leases.test.ts tests/integration/alarms.test.ts
+```
+
+The command collected 15 tests and failed only the new regression:
+
+```text
+does not claim a countdown after its only lease expires without a beacon
+expected { granted: false }, received { granted: true }
+```
+
+The first elevated execution attempt timed out in automatic approval review before producing output; the retry ran the same command and captured the RED failure. No implementation change was made during that timeout.
+
+### Fix and GREEN
+
+`claimCompletedAlarm` now keeps the timer row lock, calls `reconcilePresenceInTransaction` first, persists any revision-changing pause or natural-completion materialization, and only then runs the conditional `alarm_claimed = FALSE` update. An expired final lease therefore pauses at its last signal and cannot grant an alarm based on absent time. An active lease still allows natural completion to materialize at the current server time, and concurrent claims still serialize on the same timer row.
+
+The focused fix-round suites pass:
+
+```text
+Test Files  2 passed (2)
+Tests       15 passed (15)
+```
+
+The final full verification passes:
+
+```text
+Task 2–4 integration: 4 files, 30 tests passed
+Unit tests:           4 files, 16 tests passed
+Lint:                 exit 0
+Typecheck:            exit 0
+Build:                exit 0
+```
+
+Self-review confirms the claim path preserves timer-row-first lock ordering, uses the same lease boundary as reads and tab signals, persists reconciliation before claiming, and retains the specified `claimAlarm(userId, runId)` interface. The fix round changed only Task 4 code/tests and this report; `docs/` remains untouched.

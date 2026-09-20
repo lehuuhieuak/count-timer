@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, type NextResponse } from 'next/server';
 
 import * as alarmsRoute from '../../src/app/api/alarms/route';
@@ -51,6 +51,29 @@ afterAll(async () => {
 });
 
 describe('countdown alarm claims', () => {
+  it('does not claim a countdown after its only lease expires without a beacon', async () => {
+    const identity = await createIdentity();
+    await touchTab(identity.userId, 'tab-a', 'open', 1_000);
+    let snapshot = await readSnapshot(identity.userId, 1_000);
+    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'set-duration', durationMs: 5_000 }, 1_000);
+    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'start', timer: 'down' }, 1_000);
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(91_000));
+    try {
+      const response = await postAlarms(requestWithCookie(identity.token, { runId: snapshot.downRunId }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ granted: false });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(await readSnapshot(identity.userId, 91_000)).toMatchObject({
+      down: { valueMs: 5_000, startedAtMs: null },
+      completedRunId: null,
+    });
+  });
+
   it('claims a naturally completed run before any read or heartbeat materializes it', async () => {
     const identity = await createIdentity();
     const startedAtMs = Date.now() - 2_000;
