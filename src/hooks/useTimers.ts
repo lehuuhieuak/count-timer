@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { interpolateTimer } from '../features/timer/client-time';
 import type { Command, Snapshot } from '../features/timer/types';
 import { playAlarm, unlockAudio } from './audio';
-import { canAcceptSnapshot, isResetApplied, shouldClaimExpiredCountdown } from './snapshot-guards';
+import { canAcceptSnapshot, isCommandApplied, shouldClaimExpiredCountdown } from './snapshot-guards';
 import { createTabSync } from './tab-sync';
 
 export type SyncState = 'loading' | 'synced' | 'saving' | 'unsynced';
@@ -43,6 +43,7 @@ export function useTimers(): UseTimersResult {
   const [, setTick] = useState(0);
   const snapshotRef = useRef<Snapshot | null>(null);
   const commandPendingRef = useRef(false);
+  const tabReadyRef = useRef(false);
   const [receivedAtMonotonicMs, setReceivedAtMonotonicMs] = useState(0);
   const tabSyncRef = useRef<ReturnType<typeof createTabSync> | null>(null);
   const previousDownRef = useRef<{ runId: string; valueMs: number; started: boolean } | null>(null);
@@ -50,7 +51,7 @@ export function useTimers(): UseTimersResult {
   const alarmInFlightRef = useRef(new Set<string>());
   const alarmRetryRef = useRef(new Set<string>());
   const alarmAttemptEpochRef = useRef(new Map<string, number>());
-  const readEpochRef = useRef(0);
+  const snapshotEpochRef = useRef(0);
   const onlineRef = useRef(true);
   const activeRef = useRef(true);
 
@@ -59,9 +60,10 @@ export function useTimers(): UseTimersResult {
       return false;
     }
     snapshotRef.current = next;
+    snapshotEpochRef.current += 1;
     setReceivedAtMonotonicMs(monotonicNow());
     setSnapshot(next);
-    setConnected(true);
+    setConnected(tabReadyRef.current);
     return true;
   }, []);
 
@@ -82,7 +84,6 @@ export function useTimers(): UseTimersResult {
       if (!activeRef.current) return null;
       const accepted = acceptSnapshot(next, 'read');
       if (accepted) {
-        readEpochRef.current += 1;
         if (!commandPendingRef.current) setSyncState('synced');
         onlineRef.current = true;
       }
@@ -101,12 +102,21 @@ export function useTimers(): UseTimersResult {
     const tabSync = createTabSync({
       onSnapshotNotice: () => { void readSnapshot(); },
       onReopen: (next) => {
-        if (acceptSnapshot(next, 'tab')) setSyncState('synced');
+        tabReadyRef.current = true;
+        acceptSnapshot(next, 'tab');
+        setConnected(true);
+        setSyncState('synced');
       },
       onHeartbeatSnapshot: (next) => {
+        tabReadyRef.current = true;
         if (acceptSnapshot(next, 'heartbeat') && !commandPendingRef.current) setSyncState('synced');
       },
+      onLeaseClosed: () => {
+        tabReadyRef.current = false;
+        setConnected(false);
+      },
       onError: () => {
+        tabReadyRef.current = false;
         if (!commandPendingRef.current) {
           setConnected(false);
           setSyncState('unsynced');
@@ -125,10 +135,13 @@ export function useTimers(): UseTimersResult {
         if (!response.ok) throw new Error('Bootstrap failed.');
         const bootstrapped = await response.json() as Snapshot;
         if (!activeRef.current) return;
+        tabReadyRef.current = false;
         acceptSnapshot(bootstrapped, 'bootstrap');
         const opened = await tabSync.open();
         if (!activeRef.current) return;
+        tabReadyRef.current = true;
         acceptSnapshot(opened, 'tab');
+        setConnected(true);
         setSyncState('synced');
         onlineRef.current = true;
       } catch {
@@ -157,6 +170,7 @@ export function useTimers(): UseTimersResult {
 
     return () => {
       activeRef.current = false;
+      tabReadyRef.current = false;
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
       window.removeEventListener('focus', onFocus);
@@ -189,7 +203,7 @@ export function useTimers(): UseTimersResult {
     const expiredNow = displaySnapshot.down.valueMs <= 0 && displaySnapshot.down.startedAtMs !== null;
     const completedRetry = displaySnapshot.completedRunId === displaySnapshot.downRunId
       && alarmRetryRef.current.has(displaySnapshot.downRunId)
-      && alarmAttemptEpochRef.current.get(displaySnapshot.downRunId) !== readEpochRef.current;
+      && alarmAttemptEpochRef.current.get(displaySnapshot.downRunId) !== snapshotEpochRef.current;
     if (!expiredNow && !completedRetry) {
       previousDownRef.current = {
         runId: displaySnapshot.downRunId,
@@ -208,7 +222,7 @@ export function useTimers(): UseTimersResult {
     const runId = displaySnapshot.downRunId;
     if (!shouldAttempt || claimedRunsRef.current.has(runId) || alarmInFlightRef.current.has(runId)) return;
     alarmInFlightRef.current.add(runId);
-    alarmAttemptEpochRef.current.set(runId, readEpochRef.current);
+    alarmAttemptEpochRef.current.set(runId, snapshotEpochRef.current);
     const soundEnabled = displaySnapshot.soundEnabled;
 
     const claimAndRefresh = async () => {
@@ -234,7 +248,7 @@ export function useTimers(): UseTimersResult {
         alarmInFlightRef.current.delete(runId);
         // The read that follows this claim is reconciliation, not a new retry opportunity.
         // A later focus, tab notice, or heartbeat advances the read epoch and may retry.
-        alarmAttemptEpochRef.current.set(runId, readEpochRef.current + 1);
+        alarmAttemptEpochRef.current.set(runId, snapshotEpochRef.current + 1);
         void readSnapshot();
       }
     };
@@ -288,18 +302,13 @@ export function useTimers(): UseTimersResult {
     } catch (error) {
       if (isAbortError(error)) {
         commandPendingRef.current = false;
-        setPending(false);
         const readBack = await readSnapshot();
         if (readBack) {
-          if (command.type === 'reset' && isResetApplied(readBack, command)) {
-            setCommandError(null);
-            setSyncState('synced');
-            return true;
-          }
-          if (command.type === 'reset') setCommandError(failureMessage);
-          else setCommandError(null);
-          setSyncState('synced');
-          return false;
+          const applied = isCommandApplied(readBack, command);
+          setCommandError(applied ? null : failureMessage);
+          setSyncState(applied ? 'synced' : 'unsynced');
+          setConnected(tabReadyRef.current);
+          return applied;
         }
       }
       setConnected(false);

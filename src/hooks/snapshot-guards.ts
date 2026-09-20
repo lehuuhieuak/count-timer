@@ -24,6 +24,20 @@ export function isResetApplied(snapshot: Snapshot, command: Command): boolean {
     && snapshot.completedRunId === null;
 }
 
+export function isCommandApplied(snapshot: Snapshot, command: Command): boolean {
+  if (command.type === 'reset') return isResetApplied(snapshot, command);
+  if (command.type === 'start' || command.type === 'pause') {
+    return (snapshot[command.timer].startedAtMs !== null) === (command.type === 'start');
+  }
+  if (command.type === 'set-duration') {
+    return snapshot.durationMs === command.durationMs
+      && snapshot.down.valueMs === command.durationMs
+      && snapshot.down.startedAtMs === null
+      && snapshot.completedRunId === null;
+  }
+  return command.type === 'set-sound' && snapshot.soundEnabled === command.enabled;
+}
+
 export function shouldClaimExpiredCountdown(
   snapshot: Snapshot,
   previous: CountdownObservation | null,

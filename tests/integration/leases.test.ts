@@ -193,6 +193,40 @@ describe('browser tab leases', () => {
     expect(paused.down).toEqual({ valueMs: 3_000, startedAtMs: null });
     expect(paused.completedRunId).toBeNull();
   });
+
+  it('pauses both running timers when reconciliation finds no active leases and keeps them paused after reopen', async () => {
+    const identity = await createIdentity();
+
+    await touchTab(identity.userId, 'tab-a', 'open', 1_000);
+    let snapshot = await readSnapshot(identity.userId, 1_000);
+    snapshot = await executeCommand(
+      identity.userId,
+      snapshot.revision,
+      { type: 'set-duration', durationMs: 5_000 },
+      1_000,
+    );
+    snapshot = await executeCommand(
+      identity.userId,
+      snapshot.revision,
+      { type: 'start', timer: 'up' },
+      1_000,
+    );
+    await executeCommand(identity.userId, snapshot.revision, { type: 'start', timer: 'down' }, 1_000);
+
+    await getPool().query(
+      `UPDATE browser_tabs SET closed_at_ms = $3 WHERE user_id = $1 AND tab_id = $2`,
+      [identity.userId, 'tab-a', 2_000],
+    );
+
+    const paused = await readSnapshot(identity.userId, 5_000);
+    expect(paused.up).toEqual({ valueMs: 1_000, startedAtMs: null });
+    expect(paused.down).toEqual({ valueMs: 4_000, startedAtMs: null });
+
+    await touchTab(identity.userId, 'tab-new', 'open', 6_000);
+    const reopened = await readSnapshot(identity.userId, 6_000);
+    expect(reopened.up).toEqual({ valueMs: 1_000, startedAtMs: null });
+    expect(reopened.down).toEqual({ valueMs: 4_000, startedAtMs: null });
+  });
 });
 
 describe('tabs HTTP boundary', () => {

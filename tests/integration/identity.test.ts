@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 
 import { GET as getTimers } from '../../src/app/api/timers/route';
 import { POST as bootstrap } from '../../src/app/api/bootstrap/route';
-import { IDENTITY_COOKIE_NAME } from '../../src/lib/server/http';
+import { IDENTITY_COOKIE_NAME, MAX_REQUEST_BODY_BYTES } from '../../src/lib/server/http';
 import { closePool, getPool } from '../../src/lib/server/db';
 import { getOrCreateIdentity } from '../../src/lib/server/identity';
 import { readSnapshot } from '../../src/lib/server/repository';
@@ -13,7 +13,10 @@ const timersUrl = 'https://timer.example.test/api/timers';
 
 function requestWithCookie(url: string, token: string): NextRequest {
   return new NextRequest(url, {
-    headers: { cookie: `${IDENTITY_COOKIE_NAME}=${token}` },
+    headers: {
+      Origin: 'https://timer.example.test',
+      cookie: `${IDENTITY_COOKIE_NAME}=${token}`,
+    },
   });
 }
 
@@ -94,8 +97,14 @@ describe('anonymous identity persistence', () => {
 
 describe('bootstrap HTTP identity boundary', () => {
   it('assigns two cookie jars, reuses one jar, and sets secure one-year cookie flags', async () => {
-    const firstResponse = await bootstrap(new NextRequest(bootstrapUrl, { method: 'POST' }));
-    const secondResponse = await bootstrap(new NextRequest(bootstrapUrl, { method: 'POST' }));
+    const firstResponse = await bootstrap(new NextRequest(bootstrapUrl, {
+      method: 'POST',
+      headers: { Origin: 'https://timer.example.test' },
+    }));
+    const secondResponse = await bootstrap(new NextRequest(bootstrapUrl, {
+      method: 'POST',
+      headers: { Origin: 'https://timer.example.test' },
+    }));
     const firstCookie = firstResponse.cookies.get(IDENTITY_COOKIE_NAME);
     const secondCookie = secondResponse.cookies.get(IDENTITY_COOKIE_NAME);
 
@@ -129,6 +138,37 @@ describe('bootstrap HTTP identity boundary', () => {
       getOrCreateIdentity(secondCookie!.value),
     ]);
     expect(identities[0].userId).not.toBe(identities[1].userId);
+  });
+
+  it('requires same origin and rejects non-empty bootstrap bodies without creating users', async () => {
+    const empty = await bootstrap(new NextRequest(bootstrapUrl, {
+      method: 'POST',
+      headers: { Origin: 'https://timer.example.test' },
+    }));
+    const wrongOrigin = await bootstrap(new NextRequest(bootstrapUrl, {
+      method: 'POST',
+      headers: { Origin: 'https://evil.example.test' },
+    }));
+    const nonEmpty = await bootstrap(new NextRequest(bootstrapUrl, {
+      method: 'POST',
+      headers: { Origin: 'https://timer.example.test' },
+      body: '{}',
+    }));
+    const oversized = await bootstrap(new NextRequest(bootstrapUrl, {
+      method: 'POST',
+      headers: {
+        Origin: 'https://timer.example.test',
+        'content-length': String(MAX_REQUEST_BODY_BYTES + 1),
+      },
+      body: 'x'.repeat(MAX_REQUEST_BODY_BYTES + 1),
+    }));
+
+    expect(empty.status).toBe(200);
+    expect(wrongOrigin.status).toBe(400);
+    expect(nonEmpty.status).toBe(400);
+    expect(oversized.status).toBe(400);
+    const counts = await getPool().query<{ users: string }>('SELECT count(*)::text AS users FROM anonymous_users');
+    expect(counts.rows[0].users).toBe('1');
   });
 
   it('does not create identity for a missing or invalid non-bootstrap cookie', async () => {

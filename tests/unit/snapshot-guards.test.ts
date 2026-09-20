@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canAcceptSnapshot, isResetApplied, shouldClaimExpiredCountdown } from '../../src/hooks/snapshot-guards';
+import { canAcceptSnapshot, isCommandApplied, isResetApplied, shouldClaimExpiredCountdown } from '../../src/hooks/snapshot-guards';
 import type { Snapshot } from '../../src/features/timer/types';
 
 const snapshot = (overrides: Partial<Snapshot> = {}): Snapshot => ({
@@ -42,5 +42,12 @@ describe('snapshot guards', () => {
   it('recognizes the authoritative result of a reset command', () => {
     expect(isResetApplied(snapshot({ up: { valueMs: 0, startedAtMs: null } }), { type: 'reset', timer: 'up' })).toBe(true);
     expect(isResetApplied(snapshot({ up: { valueMs: 1, startedAtMs: null } }), { type: 'reset', timer: 'up' })).toBe(false);
+  });
+
+  it('recognizes other command targets from an authoritative snapshot', () => {
+    expect(isCommandApplied(snapshot({ up: { valueMs: 0, startedAtMs: 2_000 } }), { type: 'start', timer: 'up' })).toBe(true);
+    expect(isCommandApplied(snapshot({ down: { valueMs: 0, startedAtMs: null } }), { type: 'pause', timer: 'down' })).toBe(true);
+    expect(isCommandApplied(snapshot({ durationMs: 5_000, down: { valueMs: 5_000, startedAtMs: null } }), { type: 'set-duration', durationMs: 5_000 })).toBe(true);
+    expect(isCommandApplied(snapshot({ soundEnabled: false }), { type: 'set-sound', enabled: false })).toBe(true);
   });
 });

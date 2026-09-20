@@ -6,6 +6,8 @@ test.describe('timer controls', () => {
   test.beforeEach(async ({ page }) => {
     await installTimerApi(page);
     await page.goto('/');
+    await expect(page.getByRole('tabpanel', { name: 'Đếm lên' }).getByRole('button', { name: 'Bắt đầu', exact: true }))
+      .toBeEnabled({ timeout: 10_000 });
   });
 
   test('uses Space for start, pause, and resume while inputs ignore it', async ({ page }) => {
@@ -72,10 +74,10 @@ test.describe('timer controls', () => {
 
   test('keeps reset cancellation available and closes only after a successful reset', async ({ page }) => {
     const store = createMockTimerStore();
-    await page.unrouteAll({ behavior: 'ignoreErrors' });
     await installTimerApi(page, store);
-    await page.goto('/');
-    await page.getByRole('button', { name: '↺ Đặt lại', exact: true }).click();
+    const resetButton = page.getByRole('button', { name: '↺ Đặt lại', exact: true });
+    await expect(resetButton).toBeEnabled({ timeout: 10_000 });
+    await resetButton.click();
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     await expect(page.getByRole('button', { name: 'Hủy bỏ', exact: true })).toBeEnabled();
     await expect(page.getByRole('button', { name: 'Xác nhận đặt lại', exact: true })).toBeDisabled();
@@ -106,6 +108,10 @@ test.describe('timer presence', () => {
     await installTimerApi(second, store);
     await first.goto('/');
     await second.goto('/');
+    await expect(first.getByRole('tabpanel', { name: 'Đếm lên' }).getByRole('button', { name: 'Bắt đầu', exact: true }))
+      .toBeEnabled({ timeout: 10_000 });
+    await expect(second.getByRole('tabpanel', { name: 'Đếm lên' }).getByRole('button', { name: 'Bắt đầu', exact: true }))
+      .toBeEnabled({ timeout: 10_000 });
     await first.getByRole('button', { name: 'Bắt đầu', exact: true }).click();
     await expect(second.getByRole('button', { name: 'Tạm dừng', exact: true })).toBeVisible();
     await first.close();

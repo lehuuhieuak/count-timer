@@ -47,6 +47,35 @@ export function requireSameOrigin(request: NextRequest): void {
   }
 }
 
+export async function readEmptyBody(request: NextRequest): Promise<void> {
+  const contentLength = request.headers.get('content-length');
+  if (contentLength !== null) {
+    const parsedLength = Number(contentLength);
+    if (!Number.isSafeInteger(parsedLength) || parsedLength < 0 || parsedLength > MAX_REQUEST_BODY_BYTES) {
+      throw new BadRequestError('Request body is too large.');
+    }
+    if (parsedLength !== 0) {
+      throw new BadRequestError('Request body must be empty.');
+    }
+  }
+
+  const reader = request.body?.getReader();
+  if (!reader) return;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value.byteLength > 0) {
+        await reader.cancel().catch(() => undefined);
+        throw new BadRequestError('Request body must be empty.');
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function readJsonBody(request: NextRequest): Promise<unknown> {
   const contentLength = request.headers.get('content-length');
   if (contentLength !== null) {

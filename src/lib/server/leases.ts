@@ -19,6 +19,11 @@ type TabRow = {
   last_seen_at_ms: string;
 };
 
+type StoredTabSignalRow = {
+  last_seen_at_ms: string;
+  closed_at_ms: string | null;
+};
+
 export type TabAction = 'open' | 'heartbeat' | 'close';
 
 function requireSafeTimestamp(value: number, field: string): void {
@@ -54,6 +59,24 @@ async function deleteExpiredTabs(client: PoolClient, userId: string, thresholdMs
   );
 }
 
+async function latestStoredTabSignal(client: PoolClient, userId: string): Promise<number | null> {
+  const result = await client.query<StoredTabSignalRow>(
+    `SELECT last_seen_at_ms, closed_at_ms
+     FROM browser_tabs
+     WHERE user_id = $1
+     FOR UPDATE`,
+    [userId],
+  );
+  if (result.rows.length === 0) return null;
+
+  return Math.max(
+    ...result.rows.map((row) => Math.max(
+      safeTimestampToNumber(row.last_seen_at_ms, 'last_seen_at_ms'),
+      row.closed_at_ms === null ? 0 : safeTimestampToNumber(row.closed_at_ms, 'closed_at_ms'),
+    )),
+  );
+}
+
 export async function reconcilePresenceInTransaction(
   client: PoolClient,
   userId: string,
@@ -65,6 +88,16 @@ export async function reconcilePresenceInTransaction(
   const expiredTabs = tabs.filter(
     (tab) => safeTimestampToNumber(tab.last_seen_at_ms, 'last_seen_at_ms') <= thresholdMs,
   );
+
+  if (tabs.length === 0) {
+    const storedSignalMs = await latestStoredTabSignal(client, userId);
+    if (storedSignalMs === null) {
+      const materialized = materializeCountdownCompletion(state, nowMs);
+      return { snapshot: { ...materialized.snapshot, serverNowMs: nowMs }, alarmClaimed: materialized.alarmClaimed };
+    }
+    const paused = pauseTimersAt(state, storedSignalMs);
+    return { snapshot: { ...paused.snapshot, serverNowMs: nowMs }, alarmClaimed: paused.alarmClaimed };
+  }
 
   if (expiredTabs.length === tabs.length && expiredTabs.length > 0) {
     const lastSignalMs = Math.max(

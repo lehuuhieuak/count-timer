@@ -6,6 +6,7 @@ type TabSyncOptions = {
   onSnapshotNotice: () => void;
   onReopen: (snapshot: Snapshot) => void;
   onHeartbeatSnapshot: (snapshot: Snapshot) => void;
+  onLeaseClosed: () => void;
   onError: () => void;
 };
 
@@ -38,6 +39,7 @@ export function createTabSync(options: TabSyncOptions) {
   let heartbeatId: number | null = null;
   let channel: BroadcastChannel | null = null;
   let openPromise: Promise<Snapshot> | null = null;
+  let openGeneration = 0;
 
   const stopHeartbeat = () => {
     if (heartbeatId !== null) window.clearInterval(heartbeatId);
@@ -62,17 +64,23 @@ export function createTabSync(options: TabSyncOptions) {
   const open = async (): Promise<Snapshot> => {
     if (destroyed) throw new Error('Tab sync has been destroyed.');
     if (openPromise) return openPromise;
-    openPromise = postTabAction(tabId, 'open')
+    const requestedTabId = tabId;
+    const requestedGeneration = openGeneration;
+    const pendingOpen = postTabAction(requestedTabId, 'open')
       .then((snapshot) => {
-        if (destroyed) throw new Error('Tab sync has been destroyed.');
+        if (destroyed || requestedGeneration !== openGeneration || requestedTabId !== tabId) {
+          void postTabAction(requestedTabId, 'close').catch(() => undefined);
+          throw new Error('Tab open was superseded.');
+        }
         opened = true;
         startHeartbeat();
         return snapshot;
       })
       .finally(() => {
-        openPromise = null;
+        if (openPromise === pendingOpen) openPromise = null;
       });
-    return openPromise;
+    openPromise = pendingOpen;
+    return pendingOpen;
   };
 
   const announce = () => {
@@ -80,8 +88,16 @@ export function createTabSync(options: TabSyncOptions) {
   };
 
   const onPageHide = () => {
-    if (destroyed || !opened) return;
+    if (destroyed) return;
     const closingTabId = tabId;
+    const wasOpened = opened;
+    openGeneration += 1;
+    opened = false;
+    openPromise = null;
+    stopHeartbeat();
+    options.onLeaseClosed();
+    if (!wasOpened) return;
+
     const body = JSON.stringify({ tabId: closingTabId, action: 'close' });
     const blob = new Blob([body], { type: 'application/json' });
     if (!navigator.sendBeacon('/api/tabs', blob)) {
@@ -93,8 +109,6 @@ export function createTabSync(options: TabSyncOptions) {
         keepalive: true,
       }).catch(() => undefined);
     }
-    opened = false;
-    stopHeartbeat();
   };
 
   const onPageShow = () => {

@@ -80,14 +80,17 @@ export type MockTimerStore = {
   tabActions: string[];
   tabRequests: Array<{ action: string; tabId: string }>;
   activeTabIds: Set<string>;
+  tabOpenWaiters: Array<() => void>;
   alarmPosts: number;
   holdTimerPosts: boolean;
   holdTimerGets: boolean;
   failTimerPosts: boolean;
   failAlarmPosts: boolean;
+  holdTabOpen: boolean;
   holdTabClose: boolean;
   releaseTimerPosts: () => void;
   releaseTimerGets: () => void;
+  releaseTabOpen: () => void;
   releaseTabClose: () => void;
 };
 
@@ -95,18 +98,20 @@ export function createMockTimerStore(snapshot = makeSnapshot()): MockTimerStore 
   let releasePost: (() => void) | null = null;
   let releaseGet: (() => void) | null = null;
   let releaseClose: (() => void) | null = null;
-  return {
+  const store: MockTimerStore = {
     snapshot,
     timerPosts: 0,
     timerGets: 0,
     tabActions: [],
     tabRequests: [],
     activeTabIds: new Set<string>(),
+    tabOpenWaiters: [],
     alarmPosts: 0,
     holdTimerPosts: false,
     holdTimerGets: false,
     failTimerPosts: false,
     failAlarmPosts: false,
+    holdTabOpen: false,
     holdTabClose: false,
     releaseTimerPosts: () => {
       releasePost?.();
@@ -116,11 +121,15 @@ export function createMockTimerStore(snapshot = makeSnapshot()): MockTimerStore 
       releaseGet?.();
       releaseGet = null;
     },
+    releaseTabOpen: () => {
+      store.tabOpenWaiters.shift()?.();
+    },
     releaseTabClose: () => {
       releaseClose?.();
       releaseClose = null;
     },
   };
+  return store;
 }
 
 async function fulfillJson(route: Parameters<Parameters<Page['route']>[1]>[0], body: unknown, status = 200) {
@@ -140,6 +149,11 @@ export async function installTimerApi(page: Page, store = createMockTimerStore()
     if (body?.action && body.tabId) {
       store.tabRequests.push({ action: body.action, tabId: body.tabId });
       if (body.action === 'open') {
+        if (store.holdTabOpen) {
+          await new Promise<void>((resolve) => {
+            store.tabOpenWaiters.push(resolve);
+          });
+        }
         store.activeTabIds.add(body.tabId);
         await fulfillJson(route, store.snapshot);
         return;
