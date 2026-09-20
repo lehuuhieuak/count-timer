@@ -67,6 +67,7 @@ export function applyCommand(
     }
     result.durationMs = command.durationMs;
     result.down = { valueMs: command.durationMs, startedAtMs: null };
+    result.completedRunId = null;
     return result;
   }
 
@@ -76,15 +77,22 @@ export function applyCommand(
       valueMs: command.timer === 'up' ? 0 : result.durationMs,
       startedAtMs: null,
     };
+    if (command.timer === 'down') {
+      result.completedRunId = null;
+    }
     return result;
   }
 
   if (command.type === 'pause') {
     if (timer.startedAtMs !== null) {
+      const valueMs = readValue(timer, command.timer, nowMs);
       result[command.timer] = {
-        valueMs: readValue(timer, command.timer, nowMs),
+        valueMs,
         startedAtMs: null,
       };
+      if (command.timer === 'down' && valueMs === 0) {
+        result.completedRunId = result.downRunId;
+      }
     }
     return result;
   }

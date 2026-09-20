@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { Client } from 'pg';
 
 const testMode = process.argv.includes('--test');
@@ -22,7 +22,10 @@ if (testMode && !databaseName.endsWith('_test')) {
   process.exit(1);
 }
 
-const migration = await readFile(new URL('../db/migrations/001_initial.sql', import.meta.url), 'utf8');
+const migrationDirectory = new URL('../db/migrations/', import.meta.url);
+const migrationFiles = (await readdir(migrationDirectory))
+  .filter((fileName) => /^\d+_.*\.sql$/.test(fileName))
+  .sort();
 const client = new Client({ connectionString });
 
 try {
@@ -35,12 +38,16 @@ try {
     )
   `);
 
-  const applied = await client.query('SELECT 1 FROM schema_migrations WHERE version = $1', [1]);
-  if (applied.rowCount === 0) {
-    await client.query(migration);
-    console.log('Applied migration 001_initial.sql.');
-  } else {
-    console.log('Migration 001_initial.sql already applied; nothing to do.');
+  for (const migrationFile of migrationFiles) {
+    const version = Number(migrationFile.match(/^\d+/)?.[0]);
+    const applied = await client.query('SELECT 1 FROM schema_migrations WHERE version = $1', [version]);
+    if (applied.rowCount !== 0) {
+      console.log(`Migration ${migrationFile} already applied; nothing to do.`);
+      continue;
+    }
+
+    await client.query(await readFile(new URL(migrationFile, migrationDirectory), 'utf8'));
+    console.log(`Applied migration ${migrationFile}.`);
   }
 
   await client.query('COMMIT');

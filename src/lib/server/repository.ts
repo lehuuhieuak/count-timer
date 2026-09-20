@@ -5,22 +5,14 @@ import type { PoolClient } from 'pg';
 import { applyCommand, MAX_DURATION_MS, MIN_DURATION_MS } from '../../features/timer/engine';
 import type { Command, Snapshot, TimerKind } from '../../features/timer/types';
 import { getPool, withTransaction } from './db';
+import { reconcilePresenceInTransaction, claimCompletedAlarm } from './leases';
+import {
+  persistTimerState,
+  selectTimerState,
+  stateFromRow,
+} from './timer-state';
 
 const DEFAULT_DURATION_MS = 1_500_000;
-const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
-
-type TimerStateRow = {
-  revision: string;
-  up_value_ms: string;
-  up_started_at_ms: string | null;
-  down_value_ms: string;
-  down_started_at_ms: string | null;
-  duration_ms: string;
-  sound_enabled: boolean;
-  down_run_id: string;
-  completed_run_id: string | null;
-};
-
 export class InvalidCommandError extends Error {
   readonly statusCode = 400;
 
@@ -39,24 +31,6 @@ export class RevisionConflictError extends Error {
     this.name = 'RevisionConflictError';
     this.snapshot = snapshot;
   }
-}
-
-function safeBigIntToNumber(value: string | number | bigint | null, field: string): number | null {
-  if (value === null) {
-    return null;
-  }
-
-  let integer: bigint;
-  try {
-    integer = typeof value === 'bigint' ? value : BigInt(value);
-  } catch {
-    throw new Error(`Invalid BIGINT value for ${field}.`);
-  }
-
-  if (integer < 0 || integer > MAX_SAFE_BIGINT) {
-    throw new Error(`BIGINT value for ${field} is outside the safe JavaScript range.`);
-  }
-  return Number(integer);
 }
 
 function requireSafeTimestamp(value: number, field: string): void {
@@ -112,42 +86,6 @@ function validateCommand(command: unknown): asserts command is Command {
   throw new InvalidCommandError('Unknown timer command.');
 }
 
-function snapshotFromRow(row: TimerStateRow, nowMs: number): Snapshot {
-  return {
-    revision: safeBigIntToNumber(row.revision, 'revision')!,
-    serverNowMs: nowMs,
-    up: {
-      valueMs: safeBigIntToNumber(row.up_value_ms, 'up_value_ms')!,
-      startedAtMs: safeBigIntToNumber(row.up_started_at_ms, 'up_started_at_ms'),
-    },
-    down: {
-      valueMs: safeBigIntToNumber(row.down_value_ms, 'down_value_ms')!,
-      startedAtMs: safeBigIntToNumber(row.down_started_at_ms, 'down_started_at_ms'),
-    },
-    durationMs: safeBigIntToNumber(row.duration_ms, 'duration_ms')!,
-    soundEnabled: row.sound_enabled,
-    downRunId: row.down_run_id,
-    completedRunId: row.completed_run_id,
-  };
-}
-
-async function selectTimerState(client: PoolClient, userId: string): Promise<TimerStateRow> {
-  const result = await client.query<TimerStateRow>(
-    `SELECT revision, up_value_ms, up_started_at_ms,
-            down_value_ms, down_started_at_ms, duration_ms,
-            sound_enabled, down_run_id, completed_run_id
-     FROM timer_states
-     WHERE user_id = $1
-     FOR UPDATE`,
-    [userId],
-  );
-  const row = result.rows[0];
-  if (!row) {
-    throw new Error('Timer state was not found.');
-  }
-  return row;
-}
-
 export async function createAnonymousUser(userId: string, hashedToken: Buffer): Promise<void> {
   await withTransaction(async (client) => {
     await client.query(
@@ -164,10 +102,10 @@ async function insertInitialTimer(client: PoolClient, userId: string): Promise<v
     `INSERT INTO timer_states (
        user_id, revision, up_value_ms, up_started_at_ms,
        down_value_ms, down_started_at_ms, duration_ms, sound_enabled,
-       down_run_id, completed_run_id
+       down_run_id, completed_run_id, alarm_claimed
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [userId, 0, 0, null, DEFAULT_DURATION_MS, null, DEFAULT_DURATION_MS, true, randomUUID(), null],
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [userId, 0, 0, null, DEFAULT_DURATION_MS, null, DEFAULT_DURATION_MS, true, randomUUID(), null, false],
   );
 }
 
@@ -181,20 +119,15 @@ export async function findUserIdByTokenHash(hashedToken: Buffer): Promise<string
 
 export async function readSnapshot(userId: string, nowMs: number): Promise<Snapshot> {
   requireSafeTimestamp(nowMs, 'nowMs');
-  const result = await getPool().query<TimerStateRow>(
-    `SELECT revision, up_value_ms, up_started_at_ms,
-            down_value_ms, down_started_at_ms, duration_ms,
-            sound_enabled, down_run_id, completed_run_id
-     FROM timer_states
-     WHERE user_id = $1`,
-    [userId],
-  );
-  const row = result.rows[0];
-  if (!row) {
-    throw new Error('Timer state was not found.');
-  }
 
-  return snapshotFromRow(row, nowMs);
+  return withTransaction(async (client) => {
+    const current = stateFromRow(await selectTimerState(client, userId), nowMs);
+    const next = await reconcilePresenceInTransaction(client, userId, current, nowMs);
+    if (next.snapshot.revision !== current.snapshot.revision) {
+      await persistTimerState(client, userId, next);
+    }
+    return next.snapshot;
+  });
 }
 
 export async function executeCommand(
@@ -210,7 +143,13 @@ export async function executeCommand(
   validateCommand(command);
 
   return withTransaction(async (client) => {
-    const current = snapshotFromRow(await selectTimerState(client, userId), nowMs);
+    const stored = stateFromRow(await selectTimerState(client, userId), nowMs);
+    const reconciled = await reconcilePresenceInTransaction(client, userId, stored, nowMs);
+    if (reconciled.snapshot.revision !== stored.snapshot.revision) {
+      await persistTimerState(client, userId, reconciled);
+    }
+
+    const current = reconciled.snapshot;
     if (current.revision !== expectedRevision) {
       throw new RevisionConflictError(current);
     }
@@ -222,32 +161,17 @@ export async function executeCommand(
       throw new InvalidCommandError(error instanceof Error ? error.message : 'Invalid timer command.');
     }
 
-    await client.query(
-      `UPDATE timer_states
-       SET revision = $2,
-           up_value_ms = $3,
-           up_started_at_ms = $4,
-           down_value_ms = $5,
-           down_started_at_ms = $6,
-           duration_ms = $7,
-           sound_enabled = $8,
-           down_run_id = $9,
-           completed_run_id = $10
-       WHERE user_id = $1`,
-      [
-        userId,
-        next.revision,
-        next.up.valueMs,
-        next.up.startedAtMs,
-        next.down.valueMs,
-        next.down.startedAtMs,
-        next.durationMs,
-        next.soundEnabled,
-        next.downRunId,
-        next.completedRunId,
-      ],
-    );
+    const nextState = {
+      snapshot: next,
+      alarmClaimed:
+        reconciled.alarmClaimed && next.completedRunId === current.completedRunId,
+    };
+    await persistTimerState(client, userId, nextState);
 
     return next;
   });
+}
+
+export async function claimAlarm(userId: string, runId: string): Promise<boolean> {
+  return claimCompletedAlarm(userId, runId);
 }

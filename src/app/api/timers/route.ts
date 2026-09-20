@@ -10,7 +10,8 @@ import {
   requireIdentity,
   requireSameOrigin,
 } from '../../../lib/server/http';
-import { executeCommand, readSnapshot } from '../../../lib/server/repository';
+import { executeCommand } from '../../../lib/server/repository';
+import { reconcilePresence } from '../../../lib/server/leases';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -67,7 +68,7 @@ function parseCommandBody(value: unknown): { expectedRevision: number; command: 
 export async function GET(request: NextRequest) {
   try {
     const userId = await requireIdentity(request);
-    return jsonResponse(await readSnapshot(userId, Date.now()));
+    return jsonResponse(await reconcilePresence(userId, Date.now()));
   } catch (error) {
     return errorResponse(error);
   }
