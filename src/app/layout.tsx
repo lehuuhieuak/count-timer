@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Count Timer',
+  title: 'Đếm ngược',
   description: 'Đồng hồ đếm lên và đếm ngược.',
 };
 

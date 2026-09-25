@@ -56,7 +56,7 @@ export function TimerPage() {
   return (
     <div className="app-shell">
       <header>
-        <div className="brand">Count Timer</div>
+        <div className="brand">Đếm ngược</div>
         <TimerTabs selected={selected} onChange={setSelected} running={running} />
         <SyncStatus state={timers.syncState} />
       </header>
