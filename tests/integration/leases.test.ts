@@ -77,23 +77,53 @@ describe('browser tab leases', () => {
 
     await touchTab(identity.userId, 'tab-b', 'close', 3_000);
     const lastTabClosed = await readSnapshot(identity.userId, 3_000);
-    expect(lastTabClosed.up).toEqual({ valueMs: 2_000, startedAtMs: null });
-    expect(lastTabClosed.down).toEqual({ valueMs: 1_498_000, startedAtMs: null });
+    expect(lastTabClosed.up).toEqual({ valueMs: 0, startedAtMs: 1_000 });
+    expect(lastTabClosed.down).toEqual({ valueMs: 1_500_000, startedAtMs: 1_000 });
   });
 
-  it('uses the last heartbeat when a tab disappears without a close beacon', async () => {
+  it('pauses only the selected timer when the user explicitly pauses it', async () => {
+    const identity = await createIdentity();
+
+    await touchTab(identity.userId, 'tab-a', 'open', 1_000);
+    let snapshot = await readSnapshot(identity.userId, 1_000);
+    snapshot = await executeCommand(
+      identity.userId,
+      snapshot.revision,
+      { type: 'set-duration', durationMs: 10_000 },
+      1_000,
+    );
+    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'start', timer: 'up' }, 1_000);
+    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'start', timer: 'down' }, 1_000);
+
+    const paused = await executeCommand(
+      identity.userId,
+      snapshot.revision,
+      { type: 'pause', timer: 'up' },
+      3_500,
+    );
+
+    expect(paused.up).toEqual({ valueMs: 2_500, startedAtMs: null });
+    expect(paused.down).toEqual({ valueMs: 10_000, startedAtMs: 1_000 });
+  });
+
+  it('keeps timers running when a tab disappears without a close beacon', async () => {
     const identity = await createIdentity();
 
     await touchTab(identity.userId, 'tab-a', 'open', 1_000);
     const started = await startTimer(identity.userId, 0, { type: 'start', timer: 'up' }, 1_000);
 
     const reconciled = await readSnapshot(identity.userId, 91_000);
-    expect(reconciled.revision).toBe(started.revision + 1);
-    expect(reconciled.up).toEqual({ valueMs: 0, startedAtMs: null });
+    expect(reconciled.revision).toBe(started.revision);
+    expect(reconciled.up).toEqual({ valueMs: 0, startedAtMs: 1_000 });
+    const expiredTabs = await getPool().query<{ tab_id: string }>(
+      'SELECT tab_id FROM browser_tabs WHERE user_id = $1',
+      [identity.userId],
+    );
+    expect(expiredTabs.rows).toEqual([]);
 
     await touchTab(identity.userId, 'tab-new', 'open', 100_000);
     const reopened = await readSnapshot(identity.userId, 101_000);
-    expect(reopened.up).toEqual({ valueMs: 0, startedAtMs: null });
+    expect(reopened.up).toEqual({ valueMs: 0, startedAtMs: 1_000 });
   });
 
   it('reconciles an expired lease before accepting a late heartbeat', async () => {
@@ -103,7 +133,7 @@ describe('browser tab leases', () => {
     await startTimer(identity.userId, 0, { type: 'start', timer: 'up' }, 1_000);
 
     const afterLateHeartbeat = await touchTab(identity.userId, 'tab-a', 'heartbeat', 91_000);
-    expect(afterLateHeartbeat.up).toEqual({ valueMs: 0, startedAtMs: null });
+    expect(afterLateHeartbeat.up).toEqual({ valueMs: 0, startedAtMs: 1_000 });
     const activeTabs = await getPool().query<{ tab_id: string; closed_at_ms: string | null }>(
       'SELECT tab_id, closed_at_ms FROM browser_tabs WHERE user_id = $1',
       [identity.userId],
@@ -111,7 +141,7 @@ describe('browser tab leases', () => {
     expect(activeTabs.rows).toEqual([{ tab_id: 'tab-a', closed_at_ms: null }]);
   });
 
-  it('pauses at the maximum stored close signal when close requests arrive out of order', async () => {
+  it('keeps timers running when close requests arrive out of order', async () => {
     const identity = await createIdentity();
 
     await touchTab(identity.userId, 'tab-a', 'open', 1_000);
@@ -122,8 +152,8 @@ describe('browser tab leases', () => {
     await touchTab(identity.userId, 'tab-b', 'close', 3_000);
 
     expect((await readSnapshot(identity.userId, 3_000)).up).toEqual({
-      valueMs: 3_000,
-      startedAtMs: null,
+      valueMs: 0,
+      startedAtMs: 1_000,
     });
   });
 
@@ -160,8 +190,8 @@ describe('browser tab leases', () => {
     await touchTab(identity.userId, 'tab-new', 'close', 4_000);
     await touchTab(identity.userId, 'tab-new', 'close', 5_000);
     expect((await readSnapshot(identity.userId, 5_000)).up).toEqual({
-      valueMs: 3_000,
-      startedAtMs: null,
+      valueMs: 0,
+      startedAtMs: 1_000,
     });
   });
 
@@ -180,7 +210,7 @@ describe('browser tab leases', () => {
     expect(completed.completedRunId).toBe(runId);
   });
 
-  it('keeps the remaining countdown when the last lease closes before zero', async () => {
+  it('keeps the countdown running when the last lease closes before zero', async () => {
     const identity = await createIdentity();
 
     await touchTab(identity.userId, 'tab-a', 'open', 1_000);
@@ -189,12 +219,12 @@ describe('browser tab leases', () => {
     await startTimer(identity.userId, snapshot.revision, { type: 'start', timer: 'down' }, 1_000);
 
     await touchTab(identity.userId, 'tab-a', 'close', 3_000);
-    const paused = await readSnapshot(identity.userId, 3_000);
-    expect(paused.down).toEqual({ valueMs: 3_000, startedAtMs: null });
-    expect(paused.completedRunId).toBeNull();
+    const afterClose = await readSnapshot(identity.userId, 3_000);
+    expect(afterClose.down).toEqual({ valueMs: 5_000, startedAtMs: 1_000 });
+    expect(afterClose.completedRunId).toBeNull();
   });
 
-  it('pauses both running timers when reconciliation finds no active leases and keeps them paused after reopen', async () => {
+  it('keeps both timers running with no active leases and after reopen', async () => {
     const identity = await createIdentity();
 
     await touchTab(identity.userId, 'tab-a', 'open', 1_000);
@@ -211,21 +241,25 @@ describe('browser tab leases', () => {
       { type: 'start', timer: 'up' },
       1_000,
     );
-    await executeCommand(identity.userId, snapshot.revision, { type: 'start', timer: 'down' }, 1_000);
+    snapshot = await executeCommand(identity.userId, snapshot.revision, { type: 'start', timer: 'down' }, 1_000);
 
     await getPool().query(
       `UPDATE browser_tabs SET closed_at_ms = $3 WHERE user_id = $1 AND tab_id = $2`,
       [identity.userId, 'tab-a', 2_000],
     );
 
-    const paused = await readSnapshot(identity.userId, 5_000);
-    expect(paused.up).toEqual({ valueMs: 1_000, startedAtMs: null });
-    expect(paused.down).toEqual({ valueMs: 4_000, startedAtMs: null });
+    const noActiveLeases = await readSnapshot(identity.userId, 5_000);
+    expect(noActiveLeases.up).toEqual({ valueMs: 0, startedAtMs: 1_000 });
+    expect(noActiveLeases.down).toEqual({ valueMs: 5_000, startedAtMs: 1_000 });
 
-    await touchTab(identity.userId, 'tab-new', 'open', 6_000);
-    const reopened = await readSnapshot(identity.userId, 6_000);
-    expect(reopened.up).toEqual({ valueMs: 1_000, startedAtMs: null });
-    expect(reopened.down).toEqual({ valueMs: 4_000, startedAtMs: null });
+    await touchTab(identity.userId, 'tab-new', 'open', 5_500);
+    const reopened = await readSnapshot(identity.userId, 5_500);
+    expect(reopened.up).toEqual({ valueMs: 0, startedAtMs: 1_000 });
+    expect(reopened.down).toEqual({ valueMs: 5_000, startedAtMs: 1_000 });
+
+    const completed = await readSnapshot(identity.userId, 6_000);
+    expect(completed.down).toEqual({ valueMs: 0, startedAtMs: null });
+    expect(completed.completedRunId).toBe(snapshot.downRunId);
   });
 });
 

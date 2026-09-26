@@ -44,6 +44,49 @@ test('reopens the lease on pageshow and applies a heartbeat snapshot', async ({ 
   await expect.poll(() => store.tabActions.filter((action) => action === 'open')).toHaveLength(2);
 });
 
+test('keeps a running timer through hidden offline delay and pagehide reopen', async ({ page }) => {
+  const now = Date.now();
+  const startedAtMs = now - 1_000;
+  const store = createMockTimerStore({
+    ...createMockTimerStore().snapshot,
+    serverNowMs: now,
+    up: { valueMs: 0, startedAtMs },
+  });
+  await installTimerApi(page, store);
+  await page.clock.install({ time: now });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Tạm dừng', exact: true })).toBeEnabled();
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+    window.dispatchEvent(new Event('offline'));
+  });
+  await page.clock.fastForward(91_000);
+  expect(store.tabActions.filter((action) => action === 'heartbeat')).toHaveLength(0);
+  expect(store.snapshot.up.startedAtMs).toBe(startedAtMs);
+
+  store.snapshot = { ...store.snapshot, serverNowMs: now + 91_000 };
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+    window.dispatchEvent(new Event('online'));
+  });
+  await expect(page.getByText('Đã đồng bộ')).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: 'Đếm lên' }).locator('.digits:not([hidden])'))
+    .toHaveText('00:01:32');
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    window.dispatchEvent(new Event('pageshow'));
+  });
+  await expect.poll(() => store.tabRequests.filter((request) => request.action === 'close')).toHaveLength(1);
+  expect(store.snapshot.up.startedAtMs).toBe(startedAtMs);
+  await expect.poll(() => store.tabRequests.filter((request) => request.action === 'open')).toHaveLength(2);
+  await expect(page.getByRole('button', { name: 'Tạm dừng', exact: true })).toBeEnabled();
+  expect(store.snapshot.up.startedAtMs).toBe(startedAtMs);
+});
+
 test('keeps controls disabled between bootstrap and successful tab open', async ({ page }) => {
   const store = createMockTimerStore();
   store.holdTabOpen = true;

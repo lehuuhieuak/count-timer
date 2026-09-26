@@ -140,36 +140,3 @@ export function materializeCountdownCompletion(state: TimerState, nowMs: number)
     alarmClaimed: false,
   };
 }
-
-export function pauseTimersAt(state: TimerState, pauseAtMs: number): TimerState {
-  const { snapshot } = state;
-  let changed = false;
-  const next = {
-    ...snapshot,
-    revision: snapshot.revision + 1,
-    serverNowMs: pauseAtMs,
-    up: { ...snapshot.up },
-    down: { ...snapshot.down },
-  };
-
-  if (snapshot.up.startedAtMs !== null) {
-    next.up = { valueMs: readValue(snapshot.up, 'up', pauseAtMs), startedAtMs: null };
-    changed = true;
-  }
-
-  if (snapshot.down.startedAtMs !== null) {
-    const valueMs = readValue(snapshot.down, 'down', pauseAtMs);
-    next.down = { valueMs, startedAtMs: null };
-    if (valueMs === 0) {
-      next.completedRunId = snapshot.downRunId;
-    }
-    changed = true;
-  }
-
-  return changed
-    ? {
-        snapshot: next,
-        alarmClaimed: next.completedRunId === snapshot.completedRunId ? state.alarmClaimed : false,
-      }
-    : { snapshot: { ...snapshot, serverNowMs: pauseAtMs }, alarmClaimed: state.alarmClaimed };
-}

@@ -4,7 +4,6 @@ import type { Snapshot } from '../../features/timer/types';
 import { withTransaction } from './db';
 import {
   materializeCountdownCompletion,
-  pauseTimersAt,
   persistTimerState,
   safeTimestampToNumber,
   selectTimerState,
@@ -17,11 +16,6 @@ export const LEASE_DURATION_MS = 90_000;
 type TabRow = {
   tab_id: string;
   last_seen_at_ms: string;
-};
-
-type StoredTabSignalRow = {
-  last_seen_at_ms: string;
-  closed_at_ms: string | null;
 };
 
 export type TabAction = 'open' | 'heartbeat' | 'close';
@@ -59,24 +53,6 @@ async function deleteExpiredTabs(client: PoolClient, userId: string, thresholdMs
   );
 }
 
-async function latestStoredTabSignal(client: PoolClient, userId: string): Promise<number | null> {
-  const result = await client.query<StoredTabSignalRow>(
-    `SELECT last_seen_at_ms, closed_at_ms
-     FROM browser_tabs
-     WHERE user_id = $1
-     FOR UPDATE`,
-    [userId],
-  );
-  if (result.rows.length === 0) return null;
-
-  return Math.max(
-    ...result.rows.map((row) => Math.max(
-      safeTimestampToNumber(row.last_seen_at_ms, 'last_seen_at_ms'),
-      row.closed_at_ms === null ? 0 : safeTimestampToNumber(row.closed_at_ms, 'closed_at_ms'),
-    )),
-  );
-}
-
 export async function reconcilePresenceInTransaction(
   client: PoolClient,
   userId: string,
@@ -88,25 +64,6 @@ export async function reconcilePresenceInTransaction(
   const expiredTabs = tabs.filter(
     (tab) => safeTimestampToNumber(tab.last_seen_at_ms, 'last_seen_at_ms') <= thresholdMs,
   );
-
-  if (tabs.length === 0) {
-    const storedSignalMs = await latestStoredTabSignal(client, userId);
-    if (storedSignalMs === null) {
-      const materialized = materializeCountdownCompletion(state, nowMs);
-      return { snapshot: { ...materialized.snapshot, serverNowMs: nowMs }, alarmClaimed: materialized.alarmClaimed };
-    }
-    const paused = pauseTimersAt(state, storedSignalMs);
-    return { snapshot: { ...paused.snapshot, serverNowMs: nowMs }, alarmClaimed: paused.alarmClaimed };
-  }
-
-  if (expiredTabs.length === tabs.length && expiredTabs.length > 0) {
-    const lastSignalMs = Math.max(
-      ...expiredTabs.map((tab) => safeTimestampToNumber(tab.last_seen_at_ms, 'last_seen_at_ms')),
-    );
-    const paused = pauseTimersAt(state, lastSignalMs);
-    await deleteExpiredTabs(client, userId, thresholdMs);
-    return { snapshot: { ...paused.snapshot, serverNowMs: nowMs }, alarmClaimed: paused.alarmClaimed };
-  }
 
   if (expiredTabs.length > 0) {
     await deleteExpiredTabs(client, userId, thresholdMs);
@@ -143,36 +100,15 @@ export async function touchTab(
 
   return withTransaction(async (client) => {
     const current = stateFromRow(await selectTimerState(client, userId), nowMs);
-    let next = await reconcilePresenceInTransaction(client, userId, current, nowMs);
+    const next = await reconcilePresenceInTransaction(client, userId, current, nowMs);
 
     if (action === 'close') {
-      const closed = await client.query(
+      await client.query(
         `UPDATE browser_tabs
          SET closed_at_ms = $3
          WHERE user_id = $1 AND tab_id = $2 AND closed_at_ms IS NULL`,
         [userId, tabId, nowMs],
       );
-      if ((closed.rowCount ?? 0) > 0) {
-        const remaining = await client.query(
-          `SELECT 1 FROM browser_tabs
-           WHERE user_id = $1 AND closed_at_ms IS NULL
-           LIMIT 1`,
-          [userId],
-        );
-        if (remaining.rowCount === 0) {
-          const signals = await client.query<{ pause_at_ms: string | null }>(
-            `SELECT MAX(GREATEST(last_seen_at_ms, COALESCE(closed_at_ms, last_seen_at_ms))) AS pause_at_ms
-             FROM browser_tabs
-             WHERE user_id = $1`,
-            [userId],
-          );
-          const storedPauseAtMs = signals.rows[0]?.pause_at_ms;
-          const pauseAtMs = storedPauseAtMs === null || storedPauseAtMs === undefined
-            ? nowMs
-            : Math.max(nowMs, safeTimestampToNumber(storedPauseAtMs, 'pause_at_ms'));
-          next = pauseTimersAt(next, pauseAtMs);
-        }
-      }
     } else {
       await client.query(
         `INSERT INTO browser_tabs (user_id, tab_id, last_seen_at_ms, closed_at_ms)
